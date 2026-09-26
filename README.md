@@ -54,3 +54,24 @@ pytest -q                     # unit tests
 - Binance returns HTTP 451 from restricted regions; Bybit may return 403 — check your jurisdiction.
 - Live mode requires `TRADING_MODE=live` **and** `LIVE_TRADING_CONFIRM=I_UNDERSTAND_REAL_FUNDS_AT_RISK`.
   Use a dedicated, low-balance wallet.
+
+## Backtest
+
+```bash
+python -m backtest.data 180     # cache 180 days of 1h/15m candles (GeckoTerminal public limit)
+python -m backtest.engine       # runs the technical + risk logic through the live agent functions
+```
+
+Result on 2026-03-31 → 2026-09-26 (1h bars, 10 bps fee + 5 bps slippage per side, $10k per symbol):
+
+| Symbol | Variant | Trades | Win rate | Profit factor | Return | Max DD | Buy & hold |
+|---|---|---|---|---|---|---|---|
+| SOL | default (thr .65, breakeven on) | 20 | 35 % | 0.79 | −0.89 % | 3.9 % | +39.9 % (DD 38 %) |
+| SOL | no breakeven | 5 | 20 % | 0.30 | −1.61 % | 4.8 % | |
+| JUP | default | 11 | 55 % | 0.43 | −2.49 % | 3.6 % | +39.6 % (DD 46 %) |
+| JUP | no breakeven | 3 | 0 % | 0.00 | −2.82 % | 4.2 % | |
+
+**The technical + risk layer has no edge on this sample**: it loses slightly while buy-and-hold gained ~40 %.
+Risk control works as designed (max drawdown ≤ 5 %, losses ≈ the 1 % budget), and the breakeven protocol
+reduces losses versus a fixed stop, but it does not create profit. Do not trade this live. On-chain and
+order-book signals are not in the backtest (no history), and 180 days is a short, single-regime sample.

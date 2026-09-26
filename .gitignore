@@ -5,3 +5,4 @@ logs/
 __pycache__/
 .pytest_cache/
 .venv/
+backtest/data/
