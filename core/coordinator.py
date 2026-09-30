@@ -25,7 +25,7 @@ from database import repository as repo
 from database.connection import get_session
 from database.models import (AgentDecision, MarketTick, PortfolioSnapshot, ProtectionStatus, Trade,
                              TradeStatus)
-from exchange_connector import ExchangeConnector, SolanaDEXConnector, SolanaRPC
+from exchange_connector import ExchangeConnector, MexcSpotConnector, SolanaDEXConnector, SolanaRPC
 
 GUARD_INTERVAL_SEC = 5.0
 AUTO_HALT_PREFIX = "auto:"        # halts the engine may lift itself (connectivity); others need a human
@@ -41,9 +41,10 @@ class SwarmCoordinator:
         self.candles = GeckoTerminalClient(settings.geckoterminal_base)
         self.cex: ExchangeConnector | None = ExchangeConnector(settings) if settings.cex_exchange else None
         self.onchain = OnChainAgent(settings, self.rpc)
-        self.technical = TechnicalAgent(settings, self.candles, self.dex, self.cex)
+        self.mexc: MexcSpotConnector | None = MexcSpotConnector(settings) if settings.execution_venue == "mexc" else None
+        self.technical = TechnicalAgent(settings, self.candles, self.dex, self.cex, self.mexc)
         self.risk = RiskAgent(settings)
-        self.execution = ExecutionAgent(settings, self.dex, self.cex)
+        self.execution = ExecutionAgent(settings, self.dex, self.cex, self.mexc)
         self._trade_lock = asyncio.Lock()
         self._stop = asyncio.Event()
         self._consecutive_failures = 0
@@ -60,6 +61,16 @@ class SwarmCoordinator:
                 logger.error("CEX unavailable ({}); continuing DEX-only", exc)
                 await self.cex.close()
                 self.cex = self.technical.cex = self.execution.cex = None
+        if self.mexc is not None:
+            await self.mexc.connect()   # hard requirement when EXECUTION_VENUE=mexc
+            missing = [t.symbol for t in self.settings.watchlist if not await self.mexc.has_symbol(t.symbol)]
+            if missing:
+                raise RuntimeError(f"not listed on MEXC as /USDT: {missing}; remove them from WATCHLIST")
+            if self.settings.is_live:
+                usdt = await self.mexc.free_balance(MexcSpotConnector.QUOTE)
+                logger.warning("LIVE on MEXC: budget ${:,.2f} (cap ${:,.2f}), free USDT on account ${:,.2f}. "
+                               "MEXC spot has no API stop orders: stops work only while this engine runs.",
+                               self.settings.initial_capital_usd, self.settings.max_live_capital_usd, usdt)
         for agent in (self.onchain, self.technical, self.risk, self.execution):
             await agent.startup()
             await agent.set_health(AgentHealth.HEALTHY, "started")
@@ -115,6 +126,8 @@ class SwarmCoordinator:
                 logger.warning("{} shutdown error: {}", agent.name, exc)
         for closer in (self.dex.close, self.candles.close, self.rpc.close):
             await closer()
+        if self.mexc is not None:
+            await self.mexc.close()
         if self.cex is not None:
             await self.cex.close()
 
@@ -166,7 +179,8 @@ class SwarmCoordinator:
         out: dict[str, pd.Series] = {}
         for token in self.settings.watchlist:
             try:
-                df = await self.candles.ohlcv(token.mint, "1h", limit=720)
+                df = (await self.technical._frame(token, "1h") if self.mexc is not None
+                      else await self.candles.ohlcv(token.mint, "1h", limit=720))
                 out[token.symbol] = np.log(df.set_index("timestamp")["close"]).diff().dropna()
             except Exception as exc:
                 logger.debug("returns for {} unavailable: {}", token.symbol, exc)
@@ -182,9 +196,25 @@ class SwarmCoordinator:
 
     # ------------------------------------------------------------------ market data
     async def _prices(self) -> dict[str, dict[str, Any]]:
+        if self.mexc is not None:
+            last = await self.mexc.last_prices([t.symbol for t in self.settings.watchlist])
+            return {t.mint: {"usdPrice": last[t.symbol]} for t in self.settings.watchlist if t.symbol in last}
         return await self.dex.get_prices([t.mint for t in self.settings.watchlist])
 
+    async def _marks(self, trades: list[Trade]) -> dict[int, float]:
+        """Current price per open trade, from the venue the trade lives on."""
+        if not trades:
+            return {}
+        if self.mexc is not None:
+            last = await self.mexc.last_prices(list({t.symbol for t in trades}))
+            return {t.id: last[t.symbol] for t in trades if t.symbol in last}
+        prices = await self.dex.get_prices(list({t.mint for t in trades if t.mint}))
+        return {t.id: float(prices[t.mint]["usdPrice"]) for t in trades if t.mint in prices}
+
     async def _market_state(self, token: WatchToken, px: dict[str, Any]) -> MarketDataState:
+        if self.mexc is not None:
+            state = await self.mexc.fetch_ticker(token.symbol)
+            return state.model_copy(update={"mint": token.mint})
         if self.cex is not None and token.cex_symbol:
             try:
                 state = await self.cex.fetch_ticker(token.cex_symbol)
@@ -299,13 +329,10 @@ class SwarmCoordinator:
                     await self.close_all("emergency_halt")
                     await repo.update_control(close_all_requested=False, halted=True)
                 trades = await repo.open_trades()
-                if trades:
-                    mints = list({t.mint for t in trades if t.mint})
-                    prices = await self.dex.get_prices(mints)
-                    for trade in trades:
-                        px = prices.get(trade.mint or "")
-                        if px:
-                            await self.guard_trade(trade, float(px["usdPrice"]))
+                marks = await self._marks(trades)
+                for trade in trades:
+                    if trade.id in marks:
+                        await self.guard_trade(trade, marks[trade.id])
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -354,10 +381,14 @@ class SwarmCoordinator:
     async def close_all(self, reason: str) -> None:
         trades = await repo.open_trades()
         logger.warning("closing ALL {} open positions ({})", len(trades), reason)
-        prices = await self.dex.get_prices([t.mint for t in trades if t.mint]) if trades else {}
+        try:
+            marks = await self._marks(trades)
+        except Exception as exc:
+            logger.error("price fetch failed during close-all ({}); using last known prices", exc)
+            marks = {}
         async with self._trade_lock:
             for trade in trades:
-                mark = float(prices.get(trade.mint or "", {}).get("usdPrice") or trade.last_price or trade.entry_price)
+                mark = marks.get(trade.id) or trade.last_price or trade.entry_price
                 await self._close(trade, reason, mark)
 
     @staticmethod

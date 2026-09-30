@@ -10,22 +10,25 @@ from config import Settings, WatchToken
 from core.state import ExecutionState, RiskState
 from database import repository as repo
 from database.models import ProtectionStatus, Trade, TradeDirection, TradeStatus, utcnow
-from exchange_connector import ExchangeConnector, SolanaDEXConnector
+from exchange_connector import ExchangeConnector, MexcSpotConnector, SolanaDEXConnector, walk_book
 
-Venue = Literal["paper", "jupiter", "cex"]
+Venue = Literal["paper", "jupiter", "cex", "mexc"]
 
 
 class ExecutionAgent(BaseAgent[ExecutionState]):
     name = "execution"
 
-    def __init__(self, settings: Settings, dex: SolanaDEXConnector, cex: ExchangeConnector | None) -> None:
+    def __init__(self, settings: Settings, dex: SolanaDEXConnector, cex: ExchangeConnector | None,
+                 mexc: MexcSpotConnector | None = None) -> None:
         # Orders are not blindly retried: a timeout after submission could double-fill.
         super().__init__(timeout=120, retries=0)
-        self.settings, self.dex, self.cex = settings, dex, cex
+        self.settings, self.dex, self.cex, self.mexc = settings, dex, cex, mexc
 
     def venue_for(self, token: WatchToken) -> Venue:
         if not self.settings.is_live:
             return "paper"
+        if self.mexc is not None:
+            return "mexc"
         if token.cex_symbol and self.cex is not None:
             return "cex"
         return "jupiter"
@@ -38,9 +41,19 @@ class ExecutionAgent(BaseAgent[ExecutionState]):
         fee_rate = self.settings.paper_fee_bps / 10_000
         stop_id: str | None = None
 
-        if venue == "paper":
+        if venue == "paper" and self.mexc is not None:
+            # paper fill = a market buy walked through the live MEXC order book
+            book = await self.mexc.fetch_ticker(token.symbol)
+            price = walk_book(book.asks, usd=risk.notional_usd) if book.asks else book.price
+            units = risk.notional_usd / price
+            fees, order_id, impact = risk.notional_usd * fee_rate, f"paper-{uuid.uuid4().hex[:12]}", None
+        elif venue == "paper":
             _, price, units = await self.dex.quote_usd(token.mint, "BUY", risk.notional_usd)
             fees, order_id, impact = risk.notional_usd * fee_rate, f"paper-{uuid.uuid4().hex[:12]}", None
+        elif venue == "mexc":
+            assert self.mexc is not None
+            fill = await self.mexc.market_buy_usd(token.symbol, risk.notional_usd)
+            price, units, fees, order_id, impact = fill["price"], fill["units"], fill["fee_usd"], fill["order_id"], None
         elif venue == "jupiter":
             fill = await self.dex.execute_swap(token.mint, "BUY", risk.notional_usd)
             price, units, order_id = fill["price"], fill["units"], fill["signature"]
@@ -71,7 +84,23 @@ class ExecutionAgent(BaseAgent[ExecutionState]):
     async def close_trade(self, trade: Trade, reason: str, mark_price: float | None = None) -> ExecutionState:
         venue: Venue = trade.venue  # type: ignore[assignment]
         fee_rate = self.settings.paper_fee_bps / 10_000
-        if venue == "paper":
+        if venue == "paper" and self.mexc is not None:
+            try:
+                book = await self.mexc.fetch_ticker(trade.symbol)
+                price = walk_book(book.bids, units=trade.size) if book.bids else book.price
+            except Exception as exc:
+                if mark_price is None:
+                    raise
+                self.log.warning("paper exit quote failed ({}); using mark {}", exc, mark_price)
+                price = mark_price
+            usd = price * trade.size
+            fees, order_id = usd * fee_rate, f"paper-{uuid.uuid4().hex[:12]}"
+        elif venue == "mexc":
+            if self.mexc is None:
+                raise RuntimeError("MEXC trade open but MEXC connector unavailable")
+            fill = await self.mexc.market_sell(trade.symbol, trade.size)
+            price, usd, fees, order_id = fill["price"], fill["usd"], fill["fee_usd"], fill["order_id"]
+        elif venue == "paper":
             try:
                 _, price, usd = await self.dex.quote_usd(trade.mint or "", "SELL", trade.size)
             except Exception as exc:

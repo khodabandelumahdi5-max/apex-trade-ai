@@ -30,6 +30,17 @@ Multi-agent crypto trading engine for Solana tokens (Jupiter) with optional CEX 
 | `database/` | SQLAlchemy 2.0 async models; TimescaleDB hypertables auto-created on Postgres |
 | `dashboard.py` | Streamlit monitoring + emergency halt + risk/Kelly sliders |
 
+## MEXC
+
+`EXECUTION_VENUE=mexc` switches prices, candles, order-book imbalance and fills to MEXC spot (`SOL/USDT`, `JUP/USDT`).
+
+* **Paper on MEXC** (`TRADING_MODE=paper`): fills are simulated by walking the live MEXC order book; no keys needed.
+* **Live on MEXC** (`TRADING_MODE=live`, `LIVE_TRADING_CONFIRM=...`, `MEXC_API_KEY/SECRET`): real market orders.
+  `INITIAL_CAPITAL_USD` is the budget the bot may use and must be ≤ `MAX_LIVE_CAPITAL_USD`; every buy also checks
+  free USDT. Create the API key with spot-trading permission only (no withdrawals) and bind it to your IP.
+* **MEXC spot has no stop orders in its API.** Stops, breakeven and trailing are enforced by the engine's 5-second
+  guard loop, so they only protect you while `main.py` is running and online.
+
 ## Run
 
 ```bash

@@ -74,6 +74,12 @@ class Settings(BaseModel):
     cex_testnet: bool = True
     cex_leverage: int = Field(1, ge=1, le=5)
 
+    # --- MEXC spot (market data + paper fills + live orders when EXECUTION_VENUE=mexc) ---
+    execution_venue: Literal["jupiter", "mexc"] = "jupiter"
+    mexc_api_key: str | None = None
+    mexc_api_secret: str | None = None
+    max_live_capital_usd: float = Field(100.0, gt=0)
+
     # --- on-chain ---
     whale_wallets: list[str] = Field(default_factory=list)
     whale_top_holders: int = Field(15, ge=1, le=20)
@@ -113,7 +119,13 @@ class Settings(BaseModel):
         if self.trading_mode == "live":
             if self.live_trading_confirm != LIVE_CONFIRM_PHRASE:
                 raise ValueError(f"TRADING_MODE=live requires LIVE_TRADING_CONFIRM={LIVE_CONFIRM_PHRASE}")
-            if not self.solana_private_key and not (self.cex_exchange and self.cex_api_key):
+            if self.execution_venue == "mexc":
+                if not (self.mexc_api_key and self.mexc_api_secret):
+                    raise ValueError("EXECUTION_VENUE=mexc in live mode needs MEXC_API_KEY and MEXC_API_SECRET")
+                if self.initial_capital_usd > self.max_live_capital_usd:
+                    raise ValueError(f"INITIAL_CAPITAL_USD ({self.initial_capital_usd}) must be ≤ MAX_LIVE_CAPITAL_USD "
+                                     f"({self.max_live_capital_usd}) in live mode: it is the budget the bot may use")
+            elif not self.solana_private_key and not (self.cex_exchange and self.cex_api_key):
                 raise ValueError("Live mode needs SOLANA_PRIVATE_KEY and/or CEX credentials")
         if self.helius_api_key:
             self.solana_rpc_url = f"https://mainnet.helius-rpc.com/?api-key={self.helius_api_key}"

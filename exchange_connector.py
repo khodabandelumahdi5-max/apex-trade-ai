@@ -40,6 +40,31 @@ def order_book_imbalance(bids: list[OrderBookLevel], asks: list[OrderBookLevel])
     return 0.0 if total <= 0 else (bid_n - ask_n) / total
 
 
+def walk_book(levels: list[OrderBookLevel], usd: float | None = None, units: float | None = None) -> float:
+    """Average fill price of a market order that consumes `usd` (buy, walk asks) or `units` (sell, walk bids).
+    If the snapshot is too thin, the remainder fills at the last visible level."""
+    if not levels or (usd is None) == (units is None):
+        raise ValueError("walk_book needs levels and exactly one of usd / units")
+    spent = got = 0.0
+    for lvl in levels:
+        if usd is not None:
+            take = min(lvl.price * lvl.size, usd - spent)
+            spent, got = spent + take, got + take / lvl.price
+            if spent >= usd:
+                break
+        else:
+            take = min(lvl.size, units - got)
+            got, spent = got + take, spent + take * lvl.price
+            if got >= units:
+                break
+    last = levels[-1].price
+    if usd is not None and spent < usd:
+        got, spent = got + (usd - spent) / last, usd
+    if units is not None and got < units:
+        spent, got = spent + (units - got) * last, units
+    return spent / got
+
+
 class RateLimiter:
     """Simple async limiter: at most `rate` calls per `per` seconds."""
 
@@ -464,3 +489,138 @@ class SolanaDEXConnector:
     async def close(self) -> None:
         await self._http.close()
         await self._jito.close()
+
+
+# --------------------------------------------------------------------------- MEXC spot
+class MexcSpotConnector:
+    """MEXC spot (USDT pairs) via ccxt.async_support.
+
+    MEXC's spot API has no stop orders (only LIMIT / MARKET / LIMIT_MAKER), so stops are enforced by
+    the engine's guard loop and protect positions only while the engine is running."""
+
+    RETRYABLE = (NetworkError, RequestTimeout, ExchangeNotAvailable, DDoSProtection)
+    FATAL = (AuthenticationError, InsufficientFunds, InvalidOrder, BadSymbol)
+    QUOTE = "USDT"
+
+    def __init__(self, settings: Settings, max_retries: int = 4) -> None:
+        self.settings = settings
+        self.name = "mexc"
+        self.max_retries = max_retries
+        self.exchange: ccxt_async.Exchange = self._build()
+        self._markets_loaded = False
+
+    def _build(self) -> ccxt_async.Exchange:
+        return ccxt_async.mexc({
+            "apiKey": self.settings.mexc_api_key or "",
+            "secret": self.settings.mexc_api_secret or "",
+            "enableRateLimit": True,
+            "timeout": 20_000,
+            "options": {"defaultType": "spot", "adjustForTimeDifference": True},
+        })
+
+    async def _call(self, method: str, *args: Any, **kwargs: Any) -> Any:
+        for attempt in range(1, self.max_retries + 1):
+            try:
+                return await getattr(self.exchange, method)(*args, **kwargs)
+            except self.FATAL as exc:
+                raise FatalConnectorError(f"mexc.{method}: {exc}") from exc
+            except self.RETRYABLE as exc:
+                if attempt == self.max_retries:
+                    raise ConnectorError(f"mexc.{method} failed after retries: {exc}") from exc
+                await asyncio.sleep(min(20.0, 1.0 * 2 ** attempt))
+            except ExchangeError as exc:
+                raise ConnectorError(f"mexc.{method}: {exc}") from exc
+        raise ConnectorError("unreachable")
+
+    async def connect(self) -> None:
+        if not self._markets_loaded:
+            await self._call("load_markets")
+            self._markets_loaded = True
+            logger.info("[mexc] connected ({} markets, keys={})", len(self.exchange.markets),
+                        bool(self.settings.mexc_api_key))
+
+    def symbol(self, token_symbol: str) -> str:
+        return f"{token_symbol.upper()}/{self.QUOTE}"
+
+    async def has_symbol(self, token_symbol: str) -> bool:
+        await self.connect()
+        return self.symbol(token_symbol) in self.exchange.markets
+
+    async def fetch_ticker(self, token_symbol: str, depth: int = 20) -> MarketDataState:
+        await self.connect()
+        sym = self.symbol(token_symbol)
+        ticker, book = await asyncio.gather(self._call("fetch_ticker", sym),
+                                            self._call("fetch_order_book", sym, depth))
+        bids = [OrderBookLevel(price=p, size=s) for p, s, *_ in book["bids"][:depth]]
+        asks = [OrderBookLevel(price=p, size=s) for p, s, *_ in book["asks"][:depth]]
+        return MarketDataState(
+            # MEXC's 24h ticker bid/ask lags the book; take the top of book instead
+            symbol=token_symbol, price=float(ticker["last"]), bid=bids[0].price if bids else None,
+            ask=asks[0].price if asks else None, bids=bids, asks=asks,
+            depth_usd=sum(l.price * l.size for l in bids + asks),
+            order_book_imbalance=order_book_imbalance(bids, asks),
+            price_change_24h_pct=ticker.get("percentage"), source="mexc")
+
+    async def last_prices(self, token_symbols: list[str]) -> dict[str, float]:
+        await self.connect()
+        syms = [self.symbol(t) for t in token_symbols if self.symbol(t) in self.exchange.markets]
+        tickers = await self._call("fetch_tickers", syms)
+        return {s.split("/")[0]: float(t["last"]) for s, t in tickers.items() if t.get("last")}
+
+    async def fetch_ohlcv(self, token_symbol: str, timeframe: str, limit: int = 500) -> list[list[float]]:
+        await self.connect()
+        return await self._call("fetch_ohlcv", self.symbol(token_symbol), timeframe, None, limit)
+
+    async def free_balance(self, asset: str) -> float:
+        bal = await self._call("fetch_balance")
+        return float((bal.get(asset) or {}).get("free") or 0.0)
+
+    async def _wait_filled(self, order_id: str, sym: str, timeout: float = 15.0) -> dict[str, Any]:
+        deadline = time.monotonic() + timeout
+        order: dict[str, Any] = {}
+        while time.monotonic() < deadline:
+            order = await self._call("fetch_order", order_id, sym)
+            if order.get("status") == "closed" or float(order.get("remaining") or 0) == 0 and order.get("filled"):
+                return order
+            await asyncio.sleep(1.0)
+        raise ConnectorError(f"mexc order {order_id} not filled within {timeout:.0f}s (last: {order.get('status')})")
+
+    @staticmethod
+    def parse_fill(order: dict[str, Any], base: str) -> dict[str, float]:
+        """Net base units received/sold, average price, USD notional and fee in USD."""
+        filled = float(order.get("filled") or 0)
+        avg = float(order.get("average") or 0) or (float(order.get("cost") or 0) / filled if filled else 0.0)
+        if filled <= 0 or avg <= 0:
+            raise ConnectorError(f"mexc order {order.get('id')} has no fill data: {order}")
+        fees = order.get("fees") or ([order["fee"]] if order.get("fee") else [])
+        fee_base = sum(float(f.get("cost") or 0) for f in fees if f and f.get("currency") == base)
+        fee_quote = sum(float(f.get("cost") or 0) for f in fees if f and f.get("currency") != base)
+        return {"units": filled, "fee_base": fee_base, "price": avg, "usd": float(order.get("cost") or filled * avg),
+                "fee_usd": fee_quote + fee_base * avg}
+
+    async def market_buy_usd(self, token_symbol: str, usd: float) -> dict[str, Any]:
+        await self.connect()
+        sym = self.symbol(token_symbol)
+        free_usdt = await self.free_balance(self.QUOTE)
+        if usd > free_usdt * 0.995:
+            raise FatalConnectorError(f"insufficient USDT: need {usd:.2f}, free {free_usdt:.2f}")
+        cost = float(self.exchange.cost_to_precision(sym, usd))
+        order = await self._call("create_market_buy_order_with_cost", sym, cost)
+        fill = self.parse_fill(await self._wait_filled(str(order["id"]), sym), token_symbol.upper())
+        fill["units"] -= fill.pop("fee_base")          # a base-asset fee reduces what we hold
+        return {"order_id": str(order["id"]), **fill}
+
+    async def market_sell(self, token_symbol: str, units: float) -> dict[str, Any]:
+        await self.connect()
+        sym = self.symbol(token_symbol)
+        held = await self.free_balance(token_symbol.upper())
+        qty = float(self.exchange.amount_to_precision(sym, min(units, held)))
+        if qty <= 0:
+            raise FatalConnectorError(f"nothing to sell: position {units}, free {held}")
+        order = await self._call("create_order", sym, "market", "sell", qty)
+        fill = self.parse_fill(await self._wait_filled(str(order["id"]), sym), token_symbol.upper())
+        fill.pop("fee_base")
+        return {"order_id": str(order["id"]), **fill}
+
+    async def close(self) -> None:
+        await self.exchange.close()

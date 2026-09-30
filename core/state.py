@@ -117,7 +117,7 @@ class RiskState(_State):
 class ExecutionState(_State):
     symbol: str
     side: Literal["BUY", "SELL"]
-    venue: Literal["paper", "jupiter", "cex"]
+    venue: Literal["paper", "jupiter", "cex", "mexc"]
     status: Literal["FILLED", "REJECTED", "FAILED", "SIMULATED"]
     order_id: str | None = None
     executed_price: float | None = Field(default=None, gt=0)

@@ -11,7 +11,7 @@ from agents.base_agent import BaseAgent
 from config import Settings, WatchToken
 from core.market_data import GeckoTerminalClient
 from core.state import MarketDataState, TechnicalState, TimeframeAnalysis
-from exchange_connector import ConnectorError, ExchangeConnector, SolanaDEXConnector
+from exchange_connector import ConnectorError, ExchangeConnector, MexcSpotConnector, SolanaDEXConnector
 
 TIMEFRAMES = ("15m", "1h", "4h")
 WEIGHTS = {"trend_4h": 0.30, "trend_1h": 0.30, "trend_15m": 0.10, "rsi": 0.15, "obi": 0.15}
@@ -79,11 +79,16 @@ class TechnicalAgent(BaseAgent[TechnicalState]):
     name = "technical"
 
     def __init__(self, settings: Settings, candles: GeckoTerminalClient, dex: SolanaDEXConnector,
-                 cex: ExchangeConnector | None = None) -> None:
+                 cex: ExchangeConnector | None = None, mexc: MexcSpotConnector | None = None) -> None:
         super().__init__(timeout=120)
-        self.settings, self.candles, self.dex, self.cex = settings, candles, dex, cex
+        self.settings, self.candles, self.dex, self.cex, self.mexc = settings, candles, dex, cex, mexc
 
     async def _frame(self, token: WatchToken, tf: str) -> pd.DataFrame:
+        if self.mexc is not None and await self.mexc.has_symbol(token.symbol):
+            rows = await self.mexc.fetch_ohlcv(token.symbol, tf, 500)
+            df = pd.DataFrame(rows, columns=["timestamp", "open", "high", "low", "close", "volume"])
+            df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
+            return df
         try:
             return await self.candles.ohlcv(token.mint, tf, limit=500)
         except ConnectorError as exc:
