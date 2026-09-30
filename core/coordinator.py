@@ -28,6 +28,8 @@ from database.models import (AgentDecision, MarketTick, PortfolioSnapshot, Prote
 from exchange_connector import ExchangeConnector, SolanaDEXConnector, SolanaRPC
 
 GUARD_INTERVAL_SEC = 5.0
+AUTO_HALT_PREFIX = "auto:"        # halts the engine may lift itself (connectivity); others need a human
+AUTO_RESUME_AFTER_OK_CYCLES = 3
 
 
 class SwarmCoordinator:
@@ -45,6 +47,7 @@ class SwarmCoordinator:
         self._trade_lock = asyncio.Lock()
         self._stop = asyncio.Event()
         self._consecutive_failures = 0
+        self._consecutive_ok = 0
         self.bus.subscribe("*", self._log_event)
 
     # ------------------------------------------------------------------ lifecycle
@@ -79,14 +82,19 @@ class SwarmCoordinator:
                 try:
                     cycle.result()
                     self._consecutive_failures = 0
+                    self._consecutive_ok += 1
+                    await self._maybe_auto_resume()
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
                     self._consecutive_failures += 1
+                    self._consecutive_ok = 0
                     logger.exception("cycle failed ({}/{}): {!r}", self._consecutive_failures,
                                      self.settings.max_consecutive_failures, exc)
-                    if self._consecutive_failures >= self.settings.max_consecutive_failures:
-                        await self.trip_circuit_breaker(f"{self._consecutive_failures} consecutive cycle failures")
+                    if self._consecutive_failures == self.settings.max_consecutive_failures:
+                        await self.trip_circuit_breaker(
+                            f"{AUTO_HALT_PREFIX} {self._consecutive_failures} consecutive cycle failures "
+                            f"(network/API); resumes automatically after {AUTO_RESUME_AFTER_OK_CYCLES} good cycles")
                 try:
                     await asyncio.wait_for(self._stop.wait(), timeout=self.settings.loop_interval_sec)
                 except asyncio.TimeoutError:
@@ -109,6 +117,20 @@ class SwarmCoordinator:
             await closer()
         if self.cex is not None:
             await self.cex.close()
+
+    async def _maybe_auto_resume(self) -> None:
+        """Lift a connectivity halt once cycles succeed again. Risk halts (drawdown, dashboard
+        emergency halt) never auto-resume."""
+        if self._consecutive_ok < AUTO_RESUME_AFTER_OK_CYCLES:
+            return
+        control = await repo.get_control(self.settings.max_risk_per_trade_pct, self.settings.kelly_fraction)
+        reason = control.reason or ""
+        # also matches halts written by older versions ("21 consecutive cycle failures")
+        auto = reason.startswith(AUTO_HALT_PREFIX) or reason.endswith("consecutive cycle failures")
+        if control.halted and auto and not control.close_all_requested:
+            await repo.update_control(halted=False, reason=None)
+            logger.warning("connectivity restored ({} good cycles) → auto-resuming", self._consecutive_ok)
+            await self.bus.publish("resume", {"reason": "connectivity restored"})
 
     async def trip_circuit_breaker(self, reason: str) -> None:
         logger.critical("CIRCUIT BREAKER: {} → halting new entries", reason)

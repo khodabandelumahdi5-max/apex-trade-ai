@@ -18,7 +18,8 @@ from config import Settings, WatchToken
 from core.state import AgentHealth, OnChainState
 from database import repository as repo
 from database.models import WhaleTransaction
-from exchange_connector import ConnectorError, FatalConnectorError, SolanaRPC
+from exchange_connector import (LAMPORTS_PER_SOL, WSOL_MINT, ConnectorError, FatalConnectorError,
+                                SolanaRPC)
 
 TOKEN_PROGRAMS = ("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
                   "TokenzQdBNbLqP5VEhdkAS6EPFLC1PTsBQMfj45L4pcDzr")
@@ -41,6 +42,7 @@ class _TokenBook:
     history: deque[tuple[float, dict[str, float]]] = field(default_factory=lambda: deque(maxlen=720))
     refreshed_at: float = 0.0
     ws_subs: dict[int, str] = field(default_factory=dict)
+    native: bool = False   # SOL: track wallets' native lamport balances instead of token accounts
 
 
 class OnChainAgent(BaseAgent[OnChainState]):
@@ -61,7 +63,34 @@ class OnChainAgent(BaseAgent[OnChainState]):
         self._symbols: dict[str, str] = {}
 
     # ------------------------------------------------------------ discovery
+    async def _native_balances(self, wallets: list[str]) -> dict[str, dict[str, Any]]:
+        out: dict[str, dict[str, Any]] = {}
+        for i in range(0, len(wallets), 100):
+            chunk = wallets[i:i + 100]
+            res = await self.rpc.call("getMultipleAccounts", [chunk, {
+                "encoding": "base64", "dataSlice": {"offset": 0, "length": 0}}])
+            for addr, acc in zip(chunk, (res or {}).get("value", [])):
+                out[addr] = {"owner": addr, "amount": (acc or {}).get("lamports", 0) / LAMPORTS_PER_SOL}
+        return out
+
+    async def _balances(self, book: _TokenBook, addresses: list[str]) -> dict[str, dict[str, Any]]:
+        return await (self._native_balances(addresses) if book.native else self._parsed_accounts(addresses))
+
     async def _refresh_holders(self, token: WatchToken, book: _TokenBook) -> None:
+        if token.mint == WSOL_MINT:
+            # SOL has millions of token accounts: RPCs (incl. Helius) refuse getTokenLargestAccounts for it,
+            # and whales hold native SOL anyway. Track the configured wallets' native balances.
+            if not self.settings.whale_wallets:
+                raise HolderDiscoveryError("SOL whale tracking needs WHALE_WALLETS (RPCs cannot list SOL holders)")
+            book.native = True
+            now = time.time()
+            book.accounts = {a: _Tracked(owner=a, balance=i["amount"], updated=now)
+                             for a, i in (await self._native_balances(self.settings.whale_wallets)).items()}
+            book.refreshed_at = now
+            self.log.info("{}: tracking native SOL of {} wallets", token.symbol, len(book.accounts))
+            if self._ws is not None and not self._ws.closed:
+                await self._subscribe(book)
+            return
         candidates: list[str] = []
         try:
             largest = await self.rpc.call("getTokenLargestAccounts", [token.mint, {"commitment": "confirmed"}])
@@ -178,7 +207,9 @@ class OnChainAgent(BaseAgent[OnChainState]):
             addr = book.ws_subs.get(sub_id)
             if not addr:
                 continue
-            parsed = self._parse_token_account(params["result"]["value"])
+            value = params["result"]["value"]
+            parsed = ({"amount": (value or {}).get("lamports", 0) / LAMPORTS_PER_SOL} if book.native
+                      else self._parse_token_account(value))
             if not parsed:
                 return
             tracked = book.accounts[addr]
@@ -203,7 +234,7 @@ class OnChainAgent(BaseAgent[OnChainState]):
                  if not self.settings.enable_ws_stream or time.time() - t.updated > 120]
         if not stale:
             return
-        infos = await self._parsed_accounts(stale)
+        infos = await self._balances(book, stale)
         now = time.time()
         for addr, info in infos.items():
             tracked = book.accounts[addr]
@@ -216,7 +247,13 @@ class OnChainAgent(BaseAgent[OnChainState]):
         self._prices[token.mint], self._symbols[token.mint] = price, token.symbol
         book = self.books.setdefault(token.mint, _TokenBook())
         if not book.accounts or time.time() - book.refreshed_at > self.HOLDER_REFRESH_SEC:
-            await self._refresh_holders(token, book)
+            try:
+                await self._refresh_holders(token, book)
+            except HolderDiscoveryError as exc:
+                # configuration gap, not an outage: report UNKNOWN (blocks in strict mode, passes in veto)
+                await self.set_health(AgentHealth.DEGRADED, str(exc)[:300])
+                return OnChainState(token=token.symbol, net_flow=0.0, whale_sentiment="UNKNOWN", confidence=0.0,
+                                    method="unavailable")
         else:
             await self._poll_balances(token, book)
 
@@ -234,8 +271,13 @@ class OnChainAgent(BaseAgent[OnChainState]):
             state = OnChainState(token=token.symbol, net_flow=0.0, whale_sentiment="UNKNOWN", confidence=0.0,
                                  tracked_wallets=len(book.accounts), observations=len(book.history),
                                  method="holders_delta")
-            await self.set_health(AgentHealth.HEALTHY,
-                                  f"warming up {token.symbol}: {span / 60:.0f}/{self.MIN_WINDOW_SEC / 60:.0f} min")
+            if base_total <= 0 and span >= self.MIN_WINDOW_SEC:
+                detail = (f"{token.symbol}: no whale balance to track ({len(book.accounts)} accounts); "
+                          "add wallets holding it to WHALE_WALLETS")
+                await self.set_health(AgentHealth.DEGRADED, detail)
+            else:
+                await self.set_health(AgentHealth.HEALTHY,
+                                      f"warming up {token.symbol}: {span / 60:.0f}/{self.MIN_WINDOW_SEC / 60:.0f} min")
             return state
 
         pct = delta_units / base_total * 100
