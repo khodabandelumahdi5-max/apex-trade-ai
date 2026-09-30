@@ -5,6 +5,8 @@ import os
 from functools import lru_cache
 from typing import Literal
 
+from pathlib import Path
+
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -21,6 +23,11 @@ class WatchToken(BaseModel):
 
 def _env(name: str, default: str | None = None) -> str | None:
     value = os.getenv(name)
+    if value is not None:
+        value = value.strip()
+        # "KEY=   # comment" is read by python-dotenv as the value "# comment"
+        if value.startswith("#"):
+            value = ""
     return value if value not in (None, "") else default
 
 
@@ -125,7 +132,11 @@ def _bool(name: str, default: bool) -> bool:
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
-    load_dotenv()
+    # .env in the current folder wins; otherwise the one next to this file (project root)
+    for candidate in (Path.cwd() / ".env", Path(__file__).resolve().parent / ".env"):
+        if candidate.is_file():
+            load_dotenv(candidate)
+            break
     raw: dict[str, object] = {
         "watchlist": _parse_watchlist(_env(
             "WATCHLIST",
