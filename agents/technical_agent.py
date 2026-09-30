@@ -133,6 +133,9 @@ class TechnicalAgent(BaseAgent[TechnicalState]):
 
         stop_distance = max(self.settings.atr_stop_multiplier * h1.atr_14, market.price * 0.005)
         stop = market.price - stop_distance
-        return TechnicalState(symbol=token.symbol, ema_50=h1.ema_50, ema_200=h1.ema_200, rsi_14=h1.rsi_14,
+        from agents.risk_agent import take_profit_price
+        tp1 = take_profit_price(market.price, stop, self.settings.tp1_r) if stop > 0 else None
+        tp2 = take_profit_price(market.price, stop, self.settings.tp2_r) if stop > 0 else None
+        return TechnicalState(tp1=tp1, tp2=tp2, symbol=token.symbol, ema_50=h1.ema_50, ema_200=h1.ema_200, rsi_14=h1.rsi_14,
                               atr_14=h1.atr_14, order_book_imbalance=obi, confidence=conf, signal=signal,
                               suggested_stop=stop if stop > 0 else None, timeframes=frames, reasons=reasons)

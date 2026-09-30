@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
 from loguru import logger
-from sqlalchemy import text
+from sqlalchemy import inspect, text
 from sqlalchemy.exc import DBAPIError, OperationalError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 
@@ -62,6 +62,26 @@ async def get_session() -> AsyncIterator[AsyncSession]:
         await session.close()
 
 
+def _add_missing_columns(sync_conn: object) -> list[str]:
+    """Tiny forward-only migration: ALTER TABLE ADD COLUMN for model columns an older database lacks.
+    New columns must be nullable or carry a server_default."""
+    insp = inspect(sync_conn)
+    added: list[str] = []
+    for table in Base.metadata.sorted_tables:
+        if not insp.has_table(table.name):
+            continue
+        existing = {c["name"] for c in insp.get_columns(table.name)}
+        for col in table.columns:
+            if col.name in existing:
+                continue
+            ddl_type = col.type.compile(dialect=sync_conn.dialect)  # type: ignore[attr-defined]
+            default = f" DEFAULT {col.server_default.arg}" if col.server_default is not None else ""
+            null = "" if col.nullable or col.server_default is not None else " NOT NULL"
+            sync_conn.execute(text(f'ALTER TABLE "{table.name}" ADD COLUMN "{col.name}" {ddl_type}{default}{null}'))  # type: ignore[attr-defined]
+            added.append(f"{table.name}.{col.name}")
+    return added
+
+
 async def _setup_timescale(engine: AsyncEngine) -> None:
     async with engine.begin() as conn:
         available = (await conn.execute(text(
@@ -93,6 +113,9 @@ async def init_db(database_url: str, retries: int = 5, base_delay: float = 2.0) 
                 if not _is_postgres(database_url):
                     await conn.execute(text("PRAGMA journal_mode=WAL"))
                 await conn.run_sync(Base.metadata.create_all)
+                added = await conn.run_sync(_add_missing_columns)
+                if added:
+                    logger.info("Database upgraded, added columns: {}", ", ".join(added))
             if _is_postgres(database_url):
                 await _setup_timescale(engine)
             logger.info("Database ready ({})", engine.url.render_as_string(hide_password=True))

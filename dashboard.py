@@ -91,7 +91,7 @@ def live_panel() -> None:
         st.error(f"Database query failed: {exc}")
         return
 
-    mode = "🔴 LIVE" if settings.is_live else "🧪 PAPER"
+    mode = ("🔴 LIVE" if settings.is_live else "🧪 PAPER") + f" · {settings.execution_venue.upper()}"
     state = "⛔ HALTED" if control.halted else "🟢 RUNNING"
     engine_age = min((_ago(b.last_seen) for b in beats), default=float("inf"))
     engine = "online" if engine_age < max(3 * settings.loop_interval_sec, 180) else "no recent heartbeat"
@@ -142,7 +142,9 @@ def live_panel() -> None:
             px = t.last_price or t.entry_price
             rows.append({"#": t.id, "Symbol": t.symbol, "Venue": t.venue, "Size": round(t.size, 6),
                          "Entry": t.entry_price, "Last": px, "Stop": round(t.stop_loss, 6),
-                         "PnL ($)": round((px - t.entry_price) * t.size - t.fees_usd, 2),
+                         "TP1": ("✅ hit" if t.tp1_hit else (round(t.tp1, 6) if t.tp1 else "–")),
+                         "TP2": round(t.tp2, 6) if t.tp2 else "–",
+                         "PnL ($)": round((px - t.entry_price) * t.size - t.fees_usd + (t.realized_partial or 0), 2),
                          "PnL (%)": round((px / t.entry_price - 1) * 100, 2),
                          "Risk left ($)": round(max(0.0, (t.entry_price - t.stop_loss) * t.size), 2),
                          "Protection": PROTECTION_LABEL[t.protection_status],
@@ -150,6 +152,24 @@ def live_panel() -> None:
         st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
     else:
         st.caption("No open positions.")
+
+    # latest technical decision per symbol = the current trade plan
+    plan_rows, seen = [], set()
+    for d in decisions:
+        if d.agent != "technical" or d.symbol in seen:
+            continue
+        seen.add(d.symbol)
+        p = d.payload or {}
+        price = (p.get("timeframes", {}).get("1h", {}) or {}).get("close")
+        plan_rows.append({"Symbol": d.symbol, "Signal": d.decision, "Confidence": round(d.confidence or 0, 2),
+                          "Price": price, "Stop": p.get("suggested_stop"), "TP1": p.get("tp1"), "TP2": p.get("tp2"),
+                          "RSI 1h": round(p.get("rsi_14") or 0, 1), "Updated": d.timestamp.strftime("%H:%M:%S")})
+    st.markdown("#### Trade plan (latest signal per coin)")
+    if plan_rows:
+        st.dataframe(pd.DataFrame(plan_rows), use_container_width=True, hide_index=True)
+        st.caption("A BUY here opens a position only if the on-chain agent agrees and the risk agent approves.")
+    else:
+        st.caption("Waiting for the first technical analysis…")
 
     left, right = st.columns([3, 2])
     with left:

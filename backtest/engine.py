@@ -21,7 +21,7 @@ import pandas as pd
 
 from agents.risk_agent import HARD_MAX_RISK_PCT, estimate_edge, manage_position
 from agents.technical_agent import analyse_frame, confidence_score
-from backtest.data import load
+from backtest.data import load, load_mexc
 from config import Settings, WatchToken
 from core.state import PositionState
 from database.models import ProtectionStatus, Trade
@@ -43,6 +43,9 @@ class BTConfig:
     trailing_pct: float = 2.0
     breakeven_trigger_pct: float = 1.5
     capital: float = 10_000.0
+    tp1_r: float = 0.0        # 0 = off (the original strategy)
+    tp1_fraction: float = 0.5
+    tp2_r: float = 0.0
 
 
 @dataclass
@@ -54,6 +57,8 @@ class BTTrade:
     initial_stop: float
     highest: float
     status: ProtectionStatus = ProtectionStatus.INITIAL_STOP
+    tp1_hit: bool = False
+    realized_partial: float = 0.0
     exit_time: pd.Timestamp | None = None
     exit: float | None = None
     reason: str | None = None
@@ -95,7 +100,8 @@ def _signals(h1: pd.DataFrame, i: int, cfg: BTConfig) -> tuple[str, float, float
 def run_backtest(symbol: str, h1: pd.DataFrame, cfg: BTConfig) -> BTResult:
     h1 = h1.sort_values("timestamp").reset_index(drop=True)
     settings = Settings(watchlist=[WatchToken(symbol=symbol, mint="x")], trailing_stop_pct=cfg.trailing_pct,
-                        breakeven_trigger_pct=cfg.breakeven_trigger_pct if cfg.breakeven else 1e6)
+                        breakeven_trigger_pct=cfg.breakeven_trigger_pct if cfg.breakeven else 1e6,
+                        tp1_r=cfg.tp1_r, tp1_fraction=cfg.tp1_fraction, tp2_r=cfg.tp2_r)
     fee, slip = cfg.fee_bps / 1e4, cfg.slippage_bps / 1e4
     cash, pos = cfg.capital, None
     closed: list[BTTrade] = []
@@ -111,7 +117,7 @@ def run_backtest(symbol: str, h1: pd.DataFrame, cfg: BTConfig) -> BTResult:
         t.fees += proceeds * fee
         cash += proceeds - proceeds * fee
         t.exit_time, t.exit, t.reason = ts, fill, reason
-        t.pnl = proceeds - t.entry * t.size - t.fees
+        t.pnl = proceeds - t.entry * t.size - t.fees + t.realized_partial
         closed.append(t)
 
     for i in range(warmup, len(h1)):
@@ -149,9 +155,22 @@ def run_backtest(symbol: str, h1: pd.DataFrame, cfg: BTConfig) -> BTResult:
             else:
                 ps = PositionState(trade_id=0, symbol=symbol, mint=None, venue="bt", entry_price=pos.entry,
                                    size=pos.size, stop_loss=pos.stop, highest_price=pos.highest, last_price=hi,
-                                   protection_status=pos.status.value)
+                                   protection_status=pos.status.value, initial_stop=pos.initial_stop,
+                                   tp1_hit=pos.tp1_hit)
                 upd = manage_position(ps, hi, settings)
                 pos.stop, pos.status, pos.highest = upd.stop_loss, upd.protection_status, upd.highest_price
+                r = pos.entry - pos.initial_stop
+                if upd.reason == "take_profit_2":
+                    close(pos, ts, max(o, pos.entry + cfg.tp2_r * r), "take_profit_2")   # limit-style fill at TP2
+                    pos = None
+                elif upd.partial_fraction > 0:
+                    q = pos.size * upd.partial_fraction
+                    fill = max(o, pos.entry + cfg.tp1_r * r) * (1 - slip)
+                    fee_q = fill * q * fee
+                    cash += fill * q - fee_q
+                    pos.realized_partial += (fill - pos.entry) * q - fee_q
+                    pos.size -= q
+                    pos.tp1_hit = True
 
         # 3) signal on this bar's close
         sig, conf, atr = _signals(h1, i, cfg)
@@ -200,6 +219,7 @@ def metrics(r: BTResult) -> dict[str, float]:
         "exposure_pct": float(exposure_h / max(1, len(r.equity)) * 100),
         "bench_return_pct": float((r.benchmark.iloc[-1] / r.config.capital - 1) * 100),
         "bench_max_dd_pct": _max_dd(r.benchmark),
+        "tp_exits": sum(t.reason == "take_profit_2" for t in r.trades),
         "breakeven_exits": sum(t.reason == "breakeven_stop" for t in r.trades),
         "stop_exits": sum(t.reason == "stop_loss" for t in r.trades),
         "trailing_exits": sum(t.reason == "trailing_stop" for t in r.trades),
@@ -209,19 +229,20 @@ def metrics(r: BTResult) -> dict[str, float]:
 
 async def _main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--days", type=int, default=180)
+    ap.add_argument("--days", type=int, default=365)
+    ap.add_argument("--source", choices=["mexc", "geckoterminal"], default="mexc")
     args = ap.parse_args()
     tokens = {"SOL": "So11111111111111111111111111111111111111112", "JUP": "JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN"}
     variants = {
-        "default (thr .65, BE on)": BTConfig(),
-        "no breakeven": BTConfig(breakeven=False),
-        "thr .55": BTConfig(buy_threshold=0.55),
-        "thr .75": BTConfig(buy_threshold=0.75),
-        "no technical exit": BTConfig(technical_exit=False),
+        "no targets (old)": BTConfig(),
+        "TP1 1.5R 50% + TP2 3R (new default)": BTConfig(tp1_r=1.5, tp2_r=3.0),
+        "TP 2R full": BTConfig(tp2_r=2.0),
+        "TP1 1R 50% + TP2 2R": BTConfig(tp1_r=1.0, tp2_r=2.0),
     }
     rows = []
     for sym, mint in tokens.items():
-        h1 = await load(mint, sym, "1h", args.days)
+        h1 = (await load_mexc(sym, "1h", args.days) if args.source == "mexc"
+              else await load(mint, sym, "1h", min(args.days, 180)))
         for name, cfg in variants.items():
             m = run_backtest(sym, h1, cfg).metrics
             rows.append({"symbol": sym, "variant": name, **m})

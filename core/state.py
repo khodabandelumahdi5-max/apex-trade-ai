@@ -88,6 +88,8 @@ class TechnicalState(_State):
     confidence: float = Field(ge=0, le=1, description="Probability-like buy confidence score")
     signal: Literal["BUY", "SELL", "HOLD"]
     suggested_stop: float | None = Field(default=None, gt=0)
+    tp1: float | None = Field(default=None, gt=0)
+    tp2: float | None = Field(default=None, gt=0)
     timeframes: dict[str, TimeframeAnalysis] = Field(default_factory=dict)
     reasons: list[str] = Field(default_factory=list)
 
@@ -144,6 +146,8 @@ class PositionState(BaseModel):
     highest_price: float = Field(gt=0)
     last_price: float = Field(gt=0)
     protection_status: str
+    initial_stop: float | None = Field(default=None, gt=0)
+    tp1_hit: bool = False
 
     @property
     def unrealized_pnl(self) -> float:

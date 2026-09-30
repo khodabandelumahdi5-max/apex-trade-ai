@@ -314,6 +314,10 @@ class ExchangeConnector:
                 logger.warning("[{}] could not cancel old stop {}: {}", self.name, old_stop_id, exc)
         return new
 
+    async def reduce_position(self, symbol: str, amount: float) -> dict[str, Any]:
+        return await self._call("create_order", symbol, "market", "sell", self._amount(symbol, amount), None,
+                                {"reduceOnly": True})
+
     async def close_position(self, symbol: str, amount: float, stop_id: str | None) -> dict[str, Any]:
         order = await self._call("create_order", symbol, "market", "sell", self._amount(symbol, amount),
                                  None, {"reduceOnly": True})

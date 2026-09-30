@@ -48,6 +48,7 @@ pip install -r requirements.txt
 cp .env.example .env          # set HELIUS_API_KEY at minimum
 python main.py                # engine
 streamlit run dashboard.py    # dashboard (same DATABASE_URL)
+python signals.py             # current trade plan: signal, entry, stop, TP1, TP2, size (no orders)
 pytest -q                     # unit tests
 ```
 
@@ -67,6 +68,23 @@ pytest -q                     # unit tests
   Use a dedicated, low-balance wallet.
 
 ## Backtest
+
+### One year on MEXC (2025-09-30 → 2026-09-30, 1h, bearish year)
+
+`python -m backtest.engine --source mexc --days 365` (first ~35 days are indicator warm-up):
+
+| Symbol | Variant | Trades | Win rate | Return | Max DD | Buy & hold (same window) |
+|---|---|---|---|---|---|---|
+| SOL | any (no target was ever reached) | 3 | 0 % | −1.28 % | 1.3 % | −23.4 % (DD 64 %) |
+| JUP | no targets (old) | 7 | 14 % | −2.12 % | 3.6 % | −4.3 % (DD 63 %) |
+| JUP | TP1 1.5R 50 % + TP2 3R (default) | 5 | 20 % | −2.06 % | 3.2 % | |
+| JUP | TP 2R full exit | 6 | 17 % | −1.96 % | 3.2 % | |
+
+The trend filter kept the bot almost entirely out of a 60 %+ crash (exposure < 1 % of the time), which is what
+the risk layer is for, but it still has **no profitable edge**, and 3–7 trades a year are far too few to tell
+the target variants apart. Treat take-profit targets as risk management, not as a source of profit.
+
+### Six months on GeckoTerminal (earlier run)
 
 ```bash
 python -m backtest.data 180     # cache 180 days of 1h/15m candles (GeckoTerminal public limit)

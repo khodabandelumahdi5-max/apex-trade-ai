@@ -100,6 +100,10 @@ class Trade(Base):
     entry_order_id: Mapped[str | None] = mapped_column(String(128))
     exit_order_id: Mapped[str | None] = mapped_column(String(128))
     stop_order_id: Mapped[str | None] = mapped_column(String(128))
+    tp1: Mapped[float | None] = mapped_column(Float)
+    tp2: Mapped[float | None] = mapped_column(Float)
+    tp1_hit: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0", nullable=False)
+    realized_partial: Mapped[float] = mapped_column(Float, default=0.0, server_default="0", nullable=False)
 
 
 class AgentDecision(Base):

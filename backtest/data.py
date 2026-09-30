@@ -52,6 +52,36 @@ async def fetch_history(client: GeckoTerminalClient, mint: str, timeframe: str, 
     return out.astype({c: float for c in ("open", "high", "low", "close", "volume")})
 
 
+async def load_mexc(symbol: str, timeframe: str, days: int, refresh: bool = False) -> pd.DataFrame:
+    """MEXC spot candles for SYMBOL/USDT, paged forward from `days` ago (no API key needed)."""
+    import ccxt.async_support as ccxt_async
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    path = CACHE_DIR / f"MEXC_{symbol}_{timeframe}_{days}d.csv"
+    if path.exists() and not refresh:
+        return pd.read_csv(path, parse_dates=["timestamp"])
+    ex = ccxt_async.mexc({"enableRateLimit": True})
+    rows: list[list[float]] = []
+    try:
+        since = int((pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=days)).timestamp() * 1000)
+        step = ex.parse_timeframe(timeframe) * 1000
+        while True:
+            batch = await ex.fetch_ohlcv(f"{symbol}/USDT", timeframe, since, 1000)
+            if not batch:
+                break
+            rows += batch
+            if batch[-1][0] + step >= pd.Timestamp.now(tz="UTC").timestamp() * 1000 or batch[-1][0] < since:
+                break
+            since = batch[-1][0] + step
+    finally:
+        await ex.close()
+    df = pd.DataFrame(rows, columns=["timestamp", "open", "high", "low", "close", "volume"])
+    df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
+    df = df.drop_duplicates("timestamp").sort_values("timestamp").reset_index(drop=True)
+    df.to_csv(path, index=False)
+    logger.info("MEXC {} {}: {} bars {} → {}", symbol, timeframe, len(df), df.timestamp.iloc[0], df.timestamp.iloc[-1])
+    return df
+
+
 async def load(mint: str, symbol: str, timeframe: str, days: int, refresh: bool = False) -> pd.DataFrame:
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     path = CACHE_DIR / f"{symbol}_{timeframe}_{days}d.csv"

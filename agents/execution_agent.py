@@ -6,6 +6,7 @@ import uuid
 from typing import Literal
 
 from agents.base_agent import BaseAgent
+from agents.risk_agent import take_profit_price
 from config import Settings, WatchToken
 from core.state import ExecutionState, RiskState
 from database import repository as repo
@@ -74,62 +75,82 @@ class ExecutionAgent(BaseAgent[ExecutionState]):
             entry_price=price, size=units, stop_loss=stop_loss, initial_stop=stop_loss,
             risk_usd=units * (price - stop_loss), status=TradeStatus.OPEN, pnl=0.0,
             protection_status=ProtectionStatus.INITIAL_STOP, highest_price=price, last_price=price,
-            fees_usd=fees, entry_order_id=order_id, stop_order_id=stop_id))
+            fees_usd=fees, entry_order_id=order_id, stop_order_id=stop_id,
+            tp1=take_profit_price(price, stop_loss, self.settings.tp1_r),
+            tp2=take_profit_price(price, stop_loss, self.settings.tp2_r)))
         self.log.success("OPEN #{} {} {:.6f} @ {:.6f} stop {:.6f} [{}]", trade.id, token.symbol, units, price,
                          stop_loss, venue)
         return ExecutionState(symbol=token.symbol, side="BUY", venue=venue, status="FILLED", order_id=order_id,
                               executed_price=price, size=units, fees_usd=fees, price_impact_pct=impact)
 
     # ------------------------------------------------------------------ close
-    async def close_trade(self, trade: Trade, reason: str, mark_price: float | None = None) -> ExecutionState:
+    async def _sell(self, trade: Trade, units: float, mark_price: float | None,
+                    final: bool) -> tuple[float, float, float, str]:
+        """Sell `units` of a trade on its venue. Returns (avg price, gross USD, fees USD, order id)."""
         venue: Venue = trade.venue  # type: ignore[assignment]
         fee_rate = self.settings.paper_fee_bps / 10_000
-        if venue == "paper" and self.mexc is not None:
+        if venue == "paper":
             try:
-                book = await self.mexc.fetch_ticker(trade.symbol)
-                price = walk_book(book.bids, units=trade.size) if book.bids else book.price
+                if self.mexc is not None:
+                    book = await self.mexc.fetch_ticker(trade.symbol)
+                    price = walk_book(book.bids, units=units) if book.bids else book.price
+                else:
+                    _, price, _ = await self.dex.quote_usd(trade.mint or "", "SELL", units)
             except Exception as exc:
                 if mark_price is None:
                     raise
                 self.log.warning("paper exit quote failed ({}); using mark {}", exc, mark_price)
                 price = mark_price
-            usd = price * trade.size
-            fees, order_id = usd * fee_rate, f"paper-{uuid.uuid4().hex[:12]}"
-        elif venue == "mexc":
+            usd = price * units
+            return price, usd, usd * fee_rate, f"paper-{uuid.uuid4().hex[:12]}"
+        if venue == "mexc":
             if self.mexc is None:
                 raise RuntimeError("MEXC trade open but MEXC connector unavailable")
-            fill = await self.mexc.market_sell(trade.symbol, trade.size)
-            price, usd, fees, order_id = fill["price"], fill["usd"], fill["fee_usd"], fill["order_id"]
-        elif venue == "paper":
-            try:
-                _, price, usd = await self.dex.quote_usd(trade.mint or "", "SELL", trade.size)
-            except Exception as exc:
-                if mark_price is None:
-                    raise
-                self.log.warning("paper exit quote failed ({}); using mark {}", exc, mark_price)
-                price, usd = mark_price, mark_price * trade.size
-            fees, order_id = usd * fee_rate, f"paper-{uuid.uuid4().hex[:12]}"
-        elif venue == "jupiter":
-            fill = await self.dex.execute_swap(trade.mint or "", "SELL", trade.size)
-            price, usd, fees, order_id = fill["price"], fill["usd"], 0.0, fill["signature"]
+            fill = await self.mexc.market_sell(trade.symbol, units)
+            return fill["price"], fill["usd"], fill["fee_usd"], fill["order_id"]
+        if venue == "jupiter":
+            fill = await self.dex.execute_swap(trade.mint or "", "SELL", units)
+            return fill["price"], fill["usd"], 0.0, fill["signature"]
+        if self.cex is None:
+            raise RuntimeError("CEX trade open but CEX connector unavailable")
+        symbol = next((t.cex_symbol for t in self.settings.watchlist if t.symbol == trade.symbol), None)
+        if not symbol:
+            raise RuntimeError(f"no CEX symbol for {trade.symbol}")
+        if final:
+            order = await self.cex.close_position(symbol, units, trade.stop_order_id)
         else:
-            if self.cex is None:
-                raise RuntimeError("CEX trade open but CEX connector unavailable")
-            symbol = next((t.cex_symbol for t in self.settings.watchlist if t.symbol == trade.symbol), None)
-            if not symbol:
-                raise RuntimeError(f"no CEX symbol for {trade.symbol}")
-            order = await self.cex.close_position(symbol, trade.size, trade.stop_order_id)
-            price = float(order.get("average") or order.get("price") or mark_price or trade.last_price)
-            usd, fees, order_id = price * trade.size, float((order.get("fee") or {}).get("cost") or 0.0), str(order["id"])
+            order = await self.cex.reduce_position(symbol, units)
+            stop = await self.cex.replace_stop(symbol, trade.stop_order_id, trade.size - units, trade.stop_loss)
+            trade.stop_order_id = str(stop.get("id"))
+        price = float(order.get("average") or order.get("price") or mark_price or trade.last_price)
+        return price, price * units, float((order.get("fee") or {}).get("cost") or 0.0), str(order["id"])
 
+    async def close_trade(self, trade: Trade, reason: str, mark_price: float | None = None) -> ExecutionState:
+        price, usd, fees, order_id = await self._sell(trade, trade.size, mark_price, final=True)
         trade.fees_usd += fees
-        trade.pnl = usd - trade.entry_price * trade.size - trade.fees_usd
+        # realized_partial already contains profit (net of its fees) from earlier partial exits
+        trade.pnl = usd - trade.entry_price * trade.size - trade.fees_usd + (trade.realized_partial or 0.0)
         trade.exit_price, trade.last_price = price, price
         trade.status, trade.closed_at, trade.exit_reason, trade.exit_order_id = TradeStatus.CLOSED, utcnow(), reason, order_id
         await repo.save_trade(trade)
         self.log.info("CLOSE #{} {} @ {:.6f} pnl {:+.2f} USD ({})", trade.id, trade.symbol, price, trade.pnl, reason)
-        return ExecutionState(symbol=trade.symbol, side="SELL", venue=venue, status="FILLED", order_id=order_id,
-                              executed_price=price, size=trade.size, fees_usd=fees, pnl=trade.pnl)
+        return ExecutionState(symbol=trade.symbol, side="SELL", venue=trade.venue, status="FILLED",  # type: ignore[arg-type]
+                              order_id=order_id, executed_price=price, size=trade.size, fees_usd=fees, pnl=trade.pnl)
+
+    async def partial_close(self, trade: Trade, fraction: float, reason: str,
+                            mark_price: float | None = None) -> ExecutionState:
+        """Take profit on `fraction` of the position (TP1); the rest keeps running."""
+        units = trade.size * fraction
+        price, usd, fees, order_id = await self._sell(trade, units, mark_price, final=False)
+        gain = usd - trade.entry_price * units - fees
+        trade.realized_partial = (trade.realized_partial or 0.0) + gain
+        trade.size -= units
+        trade.tp1_hit, trade.last_price = True, price
+        await repo.save_trade(trade)
+        self.log.success("TP1 #{} {} sold {:.6f} @ {:.6f} (+{:.2f} USD), {:.6f} left", trade.id, trade.symbol, units,
+                         price, gain, trade.size)
+        return ExecutionState(symbol=trade.symbol, side="SELL", venue=trade.venue, status="FILLED",  # type: ignore[arg-type]
+                              order_id=order_id, executed_price=price, size=units, fees_usd=fees, pnl=gain)
 
     async def sync_stop(self, trade: Trade, new_stop: float) -> None:
         """Move the exchange-side stop (CEX). DEX/paper stops are enforced by the guard loop."""

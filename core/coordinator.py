@@ -160,6 +160,8 @@ class SwarmCoordinator:
             last_price=prices.get(t.mint or "", t.last_price or t.entry_price),
             protection_status=t.protection_status.value) for t in trades]
         cost = sum(t.entry_price * t.size + t.fees_usd for t in trades)
+        partial = sum(t.realized_partial or 0.0 for t in trades)   # TP1 profits of still-open trades
+        realized += partial
         cash = self.settings.initial_capital_usd + realized - cost
         unrealized = sum(p.unrealized_pnl for p in positions)
         equity = cash + sum(p.size * p.last_price for p in positions)
@@ -343,7 +345,8 @@ class SwarmCoordinator:
         pos = PositionState(trade_id=trade.id, symbol=trade.symbol, mint=trade.mint, venue=trade.venue,
                             entry_price=trade.entry_price, size=trade.size, stop_loss=trade.stop_loss,
                             highest_price=trade.highest_price, last_price=price,
-                            protection_status=trade.protection_status.value)
+                            protection_status=trade.protection_status.value, initial_stop=trade.initial_stop,
+                            tp1_hit=bool(trade.tp1_hit))
         upd = manage_position(pos, price, self.settings)
         async with self._trade_lock:
             async with get_session() as s:
@@ -360,8 +363,16 @@ class SwarmCoordinator:
                                 and upd.protection_status != ProtectionStatus.INITIAL_STOP)
             trade.stop_loss, trade.protection_status = upd.stop_loss, upd.protection_status
             trade.highest_price, trade.last_price = upd.highest_price, price
-            trade.pnl = (price - trade.entry_price) * trade.size - trade.fees_usd
-            await repo.save_trade(trade)
+            trade.pnl = (price - trade.entry_price) * trade.size - trade.fees_usd + (trade.realized_partial or 0.0)
+            if upd.partial_fraction > 0:
+                try:
+                    result = await self.execution.partial_close(trade, upd.partial_fraction, upd.reason or "tp1", price)
+                    await self.bus.publish("take_profit_1", result.model_dump(mode="json"))
+                except Exception as exc:
+                    logger.error("TP1 partial exit failed for #{} {}: {!r}", trade.id, trade.symbol, exc)
+                    await repo.save_trade(trade)
+            else:
+                await repo.save_trade(trade)
         if became_breakeven:
             await self.bus.publish("breakeven_locked", {"trade_id": trade.id, "symbol": trade.symbol,
                                                         "stop": trade.stop_loss, "price": price})

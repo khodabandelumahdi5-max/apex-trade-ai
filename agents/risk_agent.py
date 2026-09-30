@@ -41,6 +41,7 @@ class PositionUpdate:
     highest_price: float
     exit: bool
     reason: str | None = None
+    partial_fraction: float = 0.0     # > 0: sell this share of the position now (TP1)
 
     def changed(self, pos: PositionState) -> bool:
         return (self.stop_loss != pos.stop_loss or self.protection_status.value != pos.protection_status
@@ -82,19 +83,35 @@ def portfolio_var(exposures_usd: dict[str, float], hourly_returns: dict[str, pd.
     return max(parametric, historical, 0.0)
 
 
-def manage_position(pos: PositionState, price: float, settings: Settings) -> PositionUpdate:
-    """Zero-Loss Breakeven Protocol + trailing stop for a long position.
+def take_profit_price(entry: float, stop: float, r_multiple: float) -> float | None:
+    """Target at `r_multiple` × the initial risk above entry; None when disabled."""
+    if r_multiple <= 0 or stop >= entry:
+        return None
+    return entry + r_multiple * (entry - stop)
 
+
+def _reached(price: float, level: float) -> bool:
+    # relative tolerance: (101.5/100 - 1)*100 == 1.4999999 in floats
+    return price >= level or math.isclose(price, level, rel_tol=1e-9)
+
+
+def manage_position(pos: PositionState, price: float, settings: Settings) -> PositionUpdate:
+    """Exit management for a long position, evaluated on every price tick.
+
+    * price ≥ TP2 (tp2_r × R above entry) → exit everything
+    * price ≥ TP1 (first time) → sell `tp1_fraction`, stop moves to breakeven
     * unrealized ≥ +breakeven_trigger_pct → stop moves to entry (+ optional fee buffer)
-    * afterwards the stop trails `trailing_stop_pct` below the highest price, never moving down
+    * after breakeven the stop trails `trailing_stop_pct` below the highest price, never moving down
     * price ≤ stop → exit
     """
     highest = max(pos.highest_price, price)
     stop = pos.stop_loss
     status = ProtectionStatus(pos.protection_status)
-    trigger_price = pos.entry_price * (1 + settings.breakeven_trigger_pct / 100)
-    # compare in price space with a relative tolerance: (101.5/100 - 1)*100 == 1.4999999 in floats
-    reached = price >= trigger_price or math.isclose(price, trigger_price, rel_tol=1e-9)
+    initial = pos.initial_stop or pos.stop_loss
+    tp1 = take_profit_price(pos.entry_price, initial, settings.tp1_r)
+    tp2 = take_profit_price(pos.entry_price, initial, settings.tp2_r)
+    tp1_now = tp1 is not None and not pos.tp1_hit and _reached(price, tp1)
+    reached = _reached(price, pos.entry_price * (1 + settings.breakeven_trigger_pct / 100)) or tp1_now
 
     if reached and stop < pos.entry_price:
         stop = pos.entry_price * (1 + settings.breakeven_buffer_pct / 100)
@@ -104,6 +121,11 @@ def manage_position(pos: PositionState, price: float, settings: Settings) -> Pos
         if trail > stop:
             stop, status = trail, ProtectionStatus.TRAILING
 
+    if tp2 is not None and _reached(price, tp2):
+        return PositionUpdate(stop, status, highest, exit=True, reason="take_profit_2")
+    if tp1_now:
+        return PositionUpdate(stop, status, highest, exit=False, reason="take_profit_1",
+                              partial_fraction=settings.tp1_fraction)
     if price <= stop:
         reason = {ProtectionStatus.INITIAL_STOP: "stop_loss", ProtectionStatus.BREAKEVEN_LOCKED: "breakeven_stop",
                   ProtectionStatus.TRAILING: "trailing_stop"}[status]

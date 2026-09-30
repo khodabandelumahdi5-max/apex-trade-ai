@@ -101,6 +101,10 @@ class Settings(BaseModel):
     breakeven_trigger_pct: float = Field(1.5, gt=0)
     breakeven_buffer_pct: float = Field(0.0, ge=0)
     trailing_stop_pct: float = Field(2.0, gt=0)
+    # take-profit targets in R (R = entry − initial stop). 0 disables a target.
+    tp1_r: float = Field(1.5, ge=0)
+    tp1_fraction: float = Field(0.5, gt=0, lt=1)
+    tp2_r: float = Field(3.0, ge=0)
     atr_stop_multiplier: float = Field(2.0, gt=0)
     max_slippage_bps: int = Field(50, ge=1, le=1000)
     max_price_impact_pct: float = Field(1.0, gt=0)

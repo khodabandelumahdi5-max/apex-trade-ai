@@ -116,3 +116,26 @@ def test_var_monotonic_in_exposure():
 
 async def _noop(*a, **k):
     return None
+
+
+def test_tp1_partial_then_tp2_full_exit():
+    s = settings(tp1_r=1.5, tp1_fraction=0.5, tp2_r=3.0)
+    p = pos(entry=100, stop=98, highest=100)                    # R = 2 → TP1 103, TP2 106
+    p = p.model_copy(update={"initial_stop": 98.0})
+    upd = manage_position(p, 102.9, s)
+    assert upd.partial_fraction == 0 and not upd.exit
+    upd = manage_position(p, 103.0, s)
+    assert upd.partial_fraction == 0.5 and upd.reason == "take_profit_1"
+    assert upd.stop_loss >= 100.0                                # risk-free after TP1
+    after = p.model_copy(update={"tp1_hit": True, "stop_loss": upd.stop_loss,
+                                 "protection_status": upd.protection_status.value, "highest_price": 103.0})
+    assert manage_position(after, 104.0, s).partial_fraction == 0    # TP1 fires only once
+    final = manage_position(after, 106.0, s)
+    assert final.exit and final.reason == "take_profit_2"
+
+
+def test_targets_can_be_disabled():
+    s = settings(tp1_r=0, tp2_r=0)
+    p = pos(entry=100, stop=98).model_copy(update={"initial_stop": 98.0})
+    upd = manage_position(p, 150.0, s)
+    assert not upd.exit and upd.partial_fraction == 0
