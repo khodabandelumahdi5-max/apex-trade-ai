@@ -41,6 +41,21 @@ Multi-agent crypto trading engine for Solana tokens (Jupiter) with optional CEX 
 * **MEXC spot has no stop orders in its API.** Stops, breakeven and trailing are enforced by the engine's 5-second
   guard loop, so they only protect you while `main.py` is running and online.
 
+## Run on a VPS (24/7, independent of your own internet)
+
+On a fresh **Ubuntu 24.04** server (2 vCPU / 2 GB RAM is enough; pick a European location):
+
+```bash
+curl -fsSL -o install.sh https://raw.githubusercontent.com/khodabandelumahdi5-max/apex-trade-ai/main/deploy/install.sh \
+  -H "Authorization: token <GITHUB_TOKEN>"
+sudo bash install.sh
+```
+
+It installs the bot as two systemd services that restart on failure and after reboots, puts the dashboard behind
+Caddy with HTTPS (free certificate on `<ip>.sslip.io`) and a password, and enables a firewall (22/80/443 only).
+`sudo bash /opt/apex-trade-ai/deploy/update.sh` updates later. Whoever administers the VPS can read `.env`:
+use an API key without withdrawal rights, IP-restricted to the VPS.
+
 ## Run
 
 ```bash
