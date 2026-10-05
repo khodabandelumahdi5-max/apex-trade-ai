@@ -10,6 +10,7 @@ from concurrent.futures import Future
 from datetime import datetime, timedelta, timezone
 from typing import Any, Coroutine, TypeVar
 
+import altair as alt
 import pandas as pd
 import streamlit as st
 
@@ -186,7 +187,12 @@ def live_panel() -> None:
         st.markdown("#### Equity curve")
         if len(snaps) > 1:
             curve = pd.DataFrame([{"time": s.timestamp, "Equity": s.equity_usd} for s in reversed(snaps)])
-            st.line_chart(curve.set_index("time"), height=260)
+            # y-axis zoomed to the data: on a 0-based axis a +0.3 % move is an invisible flat line
+            chart = alt.Chart(curve).mark_line(color="#22c55e").encode(
+                x=alt.X("time:T", title=None, axis=alt.Axis(format="%m-%d %H:%M", labelAngle=0)),
+                y=alt.Y("Equity:Q", title="USD", scale=alt.Scale(zero=False, nice=True)),
+                tooltip=[alt.Tooltip("time:T"), alt.Tooltip("Equity:Q", format=",.2f")]).properties(height=260)
+            st.altair_chart(chart, use_container_width=True)
         else:
             st.caption("Waiting for portfolio snapshots…")
         st.markdown("#### Closed trades")

@@ -41,6 +41,14 @@ Multi-agent crypto trading engine for Solana tokens (Jupiter) with optional CEX 
 * **MEXC spot has no stop orders in its API.** Stops, breakeven and trailing are enforced by the engine's 5-second
   guard loop, so they only protect you while `main.py` is running and online.
 
+## Recording videos of the dashboard
+
+`record.bat` (or `python recorder.py live 5` / `python recorder.py timelapse 24`) records **only the dashboard
+page** in its own hidden browser: no desktop, other windows, tabs or address bar, so private things never end up in
+the video. The Streamlit toolbar and the system-log panel are hidden. `live` = real-time video with a slow scroll;
+`timelapse` = one frame every 30 s, played back fast. Output: `recordings/*.mp4` (1920×1080, H.264).
+First run installs `requirements-record.txt` and Playwright's Chromium (~200 MB).
+
 ## TradingView
 
 `tradingview/apex_strategy.pine` is the same technical + risk logic as a Pine Script v5 strategy: BUY labels,
