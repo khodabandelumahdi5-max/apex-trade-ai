@@ -42,6 +42,10 @@ def get_engine(database_url: str) -> AsyncEngine:
     return _engine
 
 
+def is_initialised() -> bool:
+    return _session_factory is not None
+
+
 def session_factory() -> async_sessionmaker[AsyncSession]:
     if _session_factory is None:
         raise DatabaseError("Database not initialised; call get_engine()/init_db() first")

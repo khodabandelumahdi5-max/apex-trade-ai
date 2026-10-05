@@ -16,7 +16,7 @@ import streamlit as st
 from agents.risk_agent import HARD_MAX_RISK_PCT
 from config import get_settings
 from database import repository as repo
-from database.connection import init_db
+from database.connection import init_db, is_initialised
 from database.models import (AgentDecision, PortfolioSnapshot, ProtectionStatus, SystemLog,
                              WhaleTransaction)
 
@@ -55,7 +55,12 @@ def _loop() -> asyncio.AbstractEventLoop:
 
 
 def run(coro: Coroutine[Any, Any, T]) -> T:
-    fut: Future[T] = asyncio.run_coroutine_threadsafe(coro, _loop())
+    loop = _loop()
+    if not is_initialised():
+        # Streamlit reloads edited modules (e.g. after `git pull`) but keeps the cached loop, which
+        # resets the module-level engine; re-create it on the long-lived loop.
+        asyncio.run_coroutine_threadsafe(init_db(get_settings().database_url), loop).result(timeout=60)
+    fut: Future[T] = asyncio.run_coroutine_threadsafe(coro, loop)
     return fut.result(timeout=30)
 
 
