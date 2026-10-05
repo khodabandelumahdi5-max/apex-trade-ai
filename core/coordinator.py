@@ -3,6 +3,8 @@ plus a fast guard loop enforcing stops and the Zero-Loss Breakeven Protocol."""
 from __future__ import annotations
 
 import asyncio
+import os
+import socket
 from datetime import datetime, timezone
 from typing import Any
 
@@ -49,10 +51,23 @@ class SwarmCoordinator:
         self._stop = asyncio.Event()
         self._consecutive_failures = 0
         self._consecutive_ok = 0
+        self.instance_id = f"{socket.gethostname()}:{os.getpid()}"
         self.bus.subscribe("*", self._log_event)
 
     # ------------------------------------------------------------------ lifecycle
     async def start(self) -> None:
+        other = await repo.claim_engine_lock(self.instance_id)
+        if other is not None:
+            # a window closed seconds ago leaves a lock that expires after ENGINE_LOCK_STALE_SEC
+            logger.warning("another engine ({}) was active moments ago; waiting up to 40 s for it", other)
+            for _ in range(8):
+                await asyncio.sleep(5)
+                other = await repo.claim_engine_lock(self.instance_id)
+                if other is None:
+                    break
+        if other is not None:
+            raise RuntimeError(f"another Apex engine is already running ({other}); close it first. "
+                               "Two engines on one database would open duplicate trades.")
         await repo.get_control(self.settings.max_risk_per_trade_pct, self.settings.kelly_fraction)
         if self.cex is not None:
             try:
@@ -118,6 +133,10 @@ class SwarmCoordinator:
         self._stop.set()
 
     async def shutdown(self) -> None:
+        try:
+            await repo.release_engine_lock(self.instance_id)
+        except Exception as exc:
+            logger.warning("could not release engine lock: {}", exc)
         for agent in (self.onchain, self.technical, self.risk, self.execution):
             try:
                 await agent.shutdown()
@@ -326,6 +345,10 @@ class SwarmCoordinator:
         and react to the dashboard's emergency halt without waiting for the next analysis cycle."""
         while True:
             try:
+                if not await repo.refresh_engine_lock(self.instance_id):
+                    logger.critical("engine lock taken by another instance; stopping this engine")
+                    self.request_stop()
+                    return
                 control = await repo.get_control(self.settings.max_risk_per_trade_pct, self.settings.kelly_fraction)
                 if control.close_all_requested:
                     await self.close_all("emergency_halt")

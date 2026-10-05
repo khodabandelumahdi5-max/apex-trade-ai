@@ -46,6 +46,42 @@ async def heartbeat(agent: str, status: str, latency_ms: float | None = None,
             row.detail = detail
 
 
+ENGINE_LOCK = "engine"
+ENGINE_LOCK_STALE_SEC = 30
+
+
+async def claim_engine_lock(instance_id: str) -> str | None:
+    """Single-engine guard. Returns the id of another live engine, or None after claiming the lock."""
+    async with get_session() as s:
+        row = await s.get(AgentHeartbeat, ENGINE_LOCK)
+        if row is not None and row.detail and row.detail != instance_id:
+            seen = row.last_seen if row.last_seen.tzinfo else row.last_seen.replace(tzinfo=timezone.utc)
+            if (datetime.now(timezone.utc) - seen).total_seconds() < ENGINE_LOCK_STALE_SEC:
+                return row.detail
+        if row is None:
+            row = AgentHeartbeat(agent=ENGINE_LOCK, status="RUNNING")
+            s.add(row)
+        row.status, row.detail, row.last_seen = "RUNNING", instance_id, utcnow()
+        return None
+
+
+async def refresh_engine_lock(instance_id: str) -> bool:
+    """Keep the lock fresh; False if another engine has taken it over."""
+    async with get_session() as s:
+        row = await s.get(AgentHeartbeat, ENGINE_LOCK)
+        if row is None or row.detail != instance_id:
+            return False
+        row.last_seen = utcnow()
+        return True
+
+
+async def release_engine_lock(instance_id: str) -> None:
+    async with get_session() as s:
+        row = await s.get(AgentHeartbeat, ENGINE_LOCK)
+        if row is not None and row.detail == instance_id:
+            await s.delete(row)
+
+
 async def record(*objects: Any) -> None:
     async with get_session() as s:
         s.add_all(objects)

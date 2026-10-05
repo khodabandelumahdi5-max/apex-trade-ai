@@ -107,6 +107,7 @@ def live_panel() -> None:
         st.warning(f"Halt reason: {control.reason}")
 
     # agents
+    beats = [b for b in beats if b.agent != "engine"]
     cols = st.columns(max(len(beats), 1))
     for col, b in zip(cols, beats):
         age = _ago(b.last_seen)
