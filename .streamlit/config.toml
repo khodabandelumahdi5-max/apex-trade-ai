@@ -8,3 +8,7 @@ font = "sans serif"
 
 [server]
 headless = true
+# No hot-reload: after `git pull` a running dashboard keeps its code until restarted, instead of
+# reloading only the changed modules (which mixed old and new database connections).
+fileWatcherType = "none"
+runOnSave = false
