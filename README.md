@@ -41,6 +41,13 @@ Multi-agent crypto trading engine for Solana tokens (Jupiter) with optional CEX 
 * **MEXC spot has no stop orders in its API.** Stops, breakeven and trailing are enforced by the engine's 5-second
   guard loop, so they only protect you while `main.py` is running and online.
 
+## TradingView
+
+`tradingview/apex_strategy.pine` is the same technical + risk logic as a Pine Script v5 strategy: BUY labels,
+stop/TP1/TP2 lines, a live trade-plan table, `alert()` messages for BUY / TP1 / exit, and TradingView's Strategy
+Tester for backtests. On-chain flow and order-book imbalance are not available there (treated as neutral), so its
+confidence can differ slightly from the bot's. Use a 1h chart, e.g. `MEXC:SOLUSDT`.
+
 ## Run on a VPS (24/7, independent of your own internet)
 
 On a fresh **Ubuntu 24.04** server (2 vCPU / 2 GB RAM is enough; pick a European location):

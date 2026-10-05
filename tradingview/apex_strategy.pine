@@ -1,0 +1,156 @@
+// Apex Trade AI — TradingView strategy
+// Same rules as the Python bot's technical + risk layer (agents/technical_agent.py, agents/risk_agent.py):
+//   • trend: EMA50/EMA200 on the chart timeframe + higher timeframe (default 4h), Wilder RSI 14, ATR 14
+//   • BUY when confidence ≥ threshold, higher-TF trend up, EMA50 > EMA200, RSI < 70
+//   • stop = entry − max(2×ATR, 0.5 %); TP1 = 1.5R (sell 50 %), TP2 = 3R
+//   • breakeven (+buffer) after +1.5 % or TP1, then 2 % trailing stop; exit when close < EMA50 < EMA200
+//   • size: 1 % of equity at risk, max 25 % of equity per position
+// Not included (no data on TradingView): on-chain whale flow and order-book imbalance (treated as neutral).
+// Use on a 1h chart, e.g. MEXC:SOLUSDT or MEXC:JUPUSDT.
+//@version=5
+strategy("Apex Trade AI", shorttitle="Apex", overlay=true, initial_capital=10000, currency=currency.USD,
+     commission_type=strategy.commission.percent, commission_value=0.1, slippage=2, pyramiding=0,
+     default_qty_type=strategy.fixed, max_labels_count=200)
+
+// ── inputs ───────────────────────────────────────────────────────────────────────────────────────────
+grpS = "Signal"
+htf        = input.timeframe("240", "Higher timeframe", group=grpS)
+buyThr     = input.float(0.65, "BUY confidence threshold", minval=0, maxval=1, step=0.01, group=grpS)
+grpR = "Risk"
+riskPct    = input.float(1.0, "Risk per trade (% equity)", minval=0.1, maxval=2.0, step=0.1, group=grpR)
+maxPosPct  = input.float(25.0, "Max position (% equity)", minval=1, maxval=100, group=grpR)
+atrMult    = input.float(2.0, "Stop = ATR ×", minval=0.5, step=0.1, group=grpR)
+grpX = "Exits"
+tp1R       = input.float(1.5, "TP1 (R, 0 = off)", minval=0, step=0.1, group=grpX)
+tp1Frac    = input.int(50, "TP1 sells %", minval=1, maxval=99, group=grpX)
+tp2R       = input.float(3.0, "TP2 (R, 0 = off)", minval=0, step=0.1, group=grpX)
+bePct      = input.float(1.5, "Breakeven after +%", minval=0.1, step=0.1, group=grpX)
+beBufPct   = input.float(0.25, "Breakeven buffer % (fees)", minval=0, step=0.05, group=grpX)
+trailPct   = input.float(2.0, "Trailing stop %", minval=0.1, step=0.1, group=grpX)
+useTrendExit = input.bool(true, "Exit when close < EMA50 < EMA200", group=grpX)
+
+// ── indicators ───────────────────────────────────────────────────────────────────────────────────────
+ema50  = ta.ema(close, 50)
+ema200 = ta.ema(close, 200)
+rsi    = ta.rsi(close, 14)          // Wilder smoothing, same as the bot
+atr    = ta.atr(14)                 // Wilder smoothing, same as the bot
+
+trendScore(c, e50, e200) =>
+    (c > e50 ? 0.5 : -0.5) + (e50 > e200 ? 0.5 : -0.5)
+
+// completed higher-timeframe bar only (no repainting)
+[hClose, hE50, hE200] = request.security(syminfo.tickerid, htf, [close[1], ta.ema(close, 50)[1], ta.ema(close, 200)[1]], lookahead=barmerge.lookahead_on)
+
+unit(x) => (x + 1) / 2
+rsiScore(r) =>
+    r >= 40 and r <= 55 ? 1.0 : r < 40 ? math.max(0.0, (r - 30) / 10) : math.max(0.0, (70 - r) / 15)
+
+tH  = trendScore(hClose, hE50, hE200)
+t1  = trendScore(close, ema50, ema200)
+// weights: HTF 0.30 · chart TF 0.30 · fast TF 0.10 (= chart TF, as in the bot's backtest) · RSI 0.15 · OBI 0.15 (neutral)
+conf = 0.30 * unit(tH) + 0.30 * unit(t1) + 0.10 * unit(t1) + 0.15 * rsiScore(rsi) + 0.15 * 0.5
+
+buySignal  = conf >= buyThr and tH > 0 and ema50 > ema200 and rsi < 70
+trendBreak = close < ema50 and ema50 < ema200
+stopDist   = math.max(atrMult * atr, close * 0.005)
+
+// ── position state ───────────────────────────────────────────────────────────────────────────────────
+var float entryPx  = na
+var float initStop = na
+var float stopPx   = na
+var float tp1Px    = na
+var float tp2Px    = na
+var float highest  = na
+var float plannedDist = na
+var bool  tp1Hit   = false
+var bool  beLocked = false
+var float fullQty  = na
+
+inPos = strategy.position_size > 0
+
+if not inPos and not na(entryPx)          // position closed: reset
+    entryPx  := na
+    initStop := na
+    stopPx   := na
+    tp1Px    := na
+    tp2Px    := na
+    highest  := na
+    fullQty  := na
+    tp1Hit   := false
+    beLocked := false
+
+if inPos and na(entryPx)                  // first bar after the fill: anchor levels to the real entry
+    entryPx  := strategy.position_avg_price
+    initStop := entryPx - plannedDist
+    stopPx   := initStop
+    r = entryPx - initStop
+    tp1Px    := tp1R > 0 ? entryPx + tp1R * r : na
+    tp2Px    := tp2R > 0 ? entryPx + tp2R * r : na
+    highest  := high
+    fullQty  := strategy.position_size
+
+if inPos and not na(entryPx)
+    highest := math.max(highest, high)
+    if not tp1Hit and strategy.position_size < fullQty * 0.999
+        tp1Hit := true
+        alert("Apex TP1 " + syminfo.ticker + " @ " + str.tostring(tp1Px, format.mintick) + " — stop to breakeven", alert.freq_once_per_bar_close)
+    if not beLocked and (high >= entryPx * (1 + bePct / 100) or tp1Hit)
+        beLocked := true
+        stopPx   := math.max(stopPx, entryPx * (1 + beBufPct / 100))
+    if beLocked
+        stopPx := math.max(stopPx, highest * (1 - trailPct / 100))
+
+// ── orders ───────────────────────────────────────────────────────────────────────────────────────────
+if buySignal and not inPos and barstate.isconfirmed
+    eq   = strategy.equity
+    qty  = math.min(eq * riskPct / 100 / stopDist, eq * maxPosPct / 100 / close)
+    plannedDist := stopDist
+    strategy.entry("Long", strategy.long, qty=qty)
+    alert("Apex BUY " + syminfo.ticker + " ≈" + str.tostring(close, format.mintick) +
+          " | stop " + str.tostring(close - stopDist, format.mintick) +
+          " | TP1 " + str.tostring(close + tp1R * stopDist, format.mintick) +
+          " | TP2 " + str.tostring(close + tp2R * stopDist, format.mintick) +
+          " | conf " + str.tostring(conf, "#.00"), alert.freq_once_per_bar_close)
+
+if inPos and not na(entryPx)
+    if not tp1Hit and not na(tp1Px)
+        strategy.exit("TP1", "Long", qty_percent=tp1Frac, limit=tp1Px, stop=stopPx, comment_profit="TP1", comment_loss="Stop")
+    strategy.exit("Exit", "Long", limit=tp2Px, stop=stopPx, comment_profit="TP2", comment_loss=beLocked ? "BE/Trail" : "Stop")
+    if useTrendExit and trendBreak and barstate.isconfirmed
+        strategy.close("Long", comment="Trend exit")
+        alert("Apex EXIT " + syminfo.ticker + " — trend broken", alert.freq_once_per_bar_close)
+
+// stop / TP2 fills (detected after the fact)
+if not inPos and inPos[1]
+    alert("Apex CLOSED " + syminfo.ticker + " @ " + str.tostring(close, format.mintick), alert.freq_once_per_bar_close)
+
+// ── visuals ──────────────────────────────────────────────────────────────────────────────────────────
+plot(ema50,  "EMA 50",  color=color.new(color.orange, 0), linewidth=1)
+plot(ema200, "EMA 200", color=color.new(color.purple, 0), linewidth=2)
+plot(inPos ? entryPx : na, "Entry", color=color.gray,  style=plot.style_linebr)
+plot(inPos ? stopPx  : na, "Stop",  color=color.red,   style=plot.style_linebr, linewidth=2)
+plot(inPos and not tp1Hit ? tp1Px : na, "TP1", color=color.lime, style=plot.style_linebr)
+plot(inPos ? tp2Px : na, "TP2", color=color.green, style=plot.style_linebr, linewidth=2)
+plotshape(buySignal and not inPos and barstate.isconfirmed, "BUY", shape.labelup, location.belowbar,
+     color.new(color.green, 0), text="BUY", textcolor=color.white, size=size.tiny)
+
+var table plan = table.new(position.top_right, 2, 7, bgcolor=color.new(#131a22, 0), border_width=1)
+if barstate.islast
+    sig = inPos ? "IN POSITION" : buySignal ? "BUY" : trendBreak ? "SELL / avoid" : "HOLD"
+    pStop = inPos ? stopPx : close - stopDist
+    pR    = inPos ? entryPx - initStop : stopDist
+    pBase = inPos ? entryPx : close
+    table.cell(plan, 0, 0, "Apex", text_color=color.white)
+    table.cell(plan, 1, 0, sig, text_color=sig == "BUY" or sig == "IN POSITION" ? color.lime : color.silver)
+    table.cell(plan, 0, 1, "Confidence", text_color=color.silver)
+    table.cell(plan, 1, 1, str.tostring(conf, "#.00"), text_color=color.white)
+    table.cell(plan, 0, 2, inPos ? "Entry" : "Entry ≈", text_color=color.silver)
+    table.cell(plan, 1, 2, str.tostring(pBase, format.mintick), text_color=color.white)
+    table.cell(plan, 0, 3, "Stop", text_color=color.silver)
+    table.cell(plan, 1, 3, str.tostring(pStop, format.mintick), text_color=color.red)
+    table.cell(plan, 0, 4, "TP1", text_color=color.silver)
+    table.cell(plan, 1, 4, tp1R > 0 ? str.tostring(pBase + tp1R * pR, format.mintick) : "off", text_color=color.lime)
+    table.cell(plan, 0, 5, "TP2", text_color=color.silver)
+    table.cell(plan, 1, 5, tp2R > 0 ? str.tostring(pBase + tp2R * pR, format.mintick) : "off", text_color=color.green)
+    table.cell(plan, 0, 6, "RSI", text_color=color.silver)
+    table.cell(plan, 1, 6, str.tostring(rsi, "#.0"), text_color=color.white)
