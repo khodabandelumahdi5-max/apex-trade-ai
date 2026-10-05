@@ -29,6 +29,7 @@ class BaseAgent(ABC, Generic[T]):
         self.health = AgentHealth.STARTING
         self.consecutive_failures = 0
         self.last_error: str | None = None
+        self.detail: str | None = None   # status note for the dashboard; reset on every run
         self.log = logger.bind(agent=self.name)
 
     @abstractmethod
@@ -45,11 +46,16 @@ class BaseAgent(ABC, Generic[T]):
         last_exc: BaseException | None = None
         for attempt in range(1, self.retries + 2):
             started = time.perf_counter()
+            self.detail = None
             try:
                 result = await asyncio.wait_for(self.process(**inputs), timeout=self.timeout)
                 self.consecutive_failures = 0
-                self.health, self.last_error = AgentHealth.HEALTHY, None
-                await self._beat((time.perf_counter() - started) * 1000)
+                # keep a DEGRADED status the agent set during this run (e.g. missing whale config)
+                if not (self.health == AgentHealth.DEGRADED and self.detail):
+                    self.health = AgentHealth.HEALTHY
+                self.last_error = None
+                # always overwrite the note, so a finished warm-up does not linger on the dashboard
+                await self._beat((time.perf_counter() - started) * 1000, self.detail or "ok")
                 return result
             except asyncio.CancelledError:
                 raise
@@ -77,5 +83,5 @@ class BaseAgent(ABC, Generic[T]):
             self.log.error("heartbeat write failed: {}", exc)
 
     async def set_health(self, health: AgentHealth, detail: str | None = None) -> None:
-        self.health = health
+        self.health, self.detail = health, detail
         await self._beat(None, detail)

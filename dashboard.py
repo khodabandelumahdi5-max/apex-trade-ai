@@ -105,8 +105,12 @@ def live_panel() -> None:
     cols = st.columns(max(len(beats), 1))
     for col, b in zip(cols, beats):
         age = _ago(b.last_seen)
-        css = "bad" if b.status in ("FAILED", "STOPPED") or age > HEARTBEAT_STALE_SEC else \
-            "warn" if b.status in ("DEGRADED", "STARTING") else "ok"
+        # risk/execution only report when a trade is evaluated: silence there means idle, not broken
+        event_driven = b.agent in ("risk", "execution")
+        stale = age > HEARTBEAT_STALE_SEC and not event_driven
+        css = "bad" if b.status in ("FAILED", "STOPPED") or stale else \
+            "warn" if b.status in ("DEGRADED", "STARTING") else "muted" if event_driven and \
+            age > HEARTBEAT_STALE_SEC else "ok"
         latency = f"{b.last_latency_ms:.0f} ms" if b.last_latency_ms else "–"
         detail = (b.last_error or b.detail or "")[:80]
         col.markdown(f"<div class='agent-card'><b>{b.agent.upper()}</b> <span class='{css}'>● {b.status}</span><br>"

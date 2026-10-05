@@ -204,7 +204,7 @@ class RiskAgent(BaseAgent[RiskState]):
             reasons.append(f"size scaled ×{scale:.2f} to respect VaR limit")
 
         notional = size * entry_price
-        if notional < 10:
+        if notional < 5:
             return reject(f"position too small (${notional:.2f})")
         return RiskState(symbol=symbol, approved=True, entry_price=entry_price, position_size=size,
                          notional_usd=notional, max_risk_usd=size * risk_per_unit, stop_loss=stop,

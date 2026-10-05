@@ -608,9 +608,22 @@ class MexcSpotConnector:
         free_usdt = await self.free_balance(self.QUOTE)
         if usd > free_usdt * 0.995:
             raise FatalConnectorError(f"insufficient USDT: need {usd:.2f}, free {free_usdt:.2f}")
+        base = token_symbol.upper()
+        held_before = await self.free_balance(base)
         cost = float(self.exchange.cost_to_precision(sym, usd))
         order = await self._call("create_market_buy_order_with_cost", sym, cost)
-        fill = self.parse_fill(await self._wait_filled(str(order["id"]), sym), token_symbol.upper())
+        try:
+            fill = self.parse_fill(await self._wait_filled(str(order["id"]), sym), base)
+        except ConnectorError as exc:
+            # The order was accepted; never drop it on the floor (that would leave an unprotected
+            # position). Reconcile from the balance change instead.
+            received = await self.free_balance(base) - held_before
+            if received <= 0:
+                raise ConnectorError(f"buy {order['id']} state unknown and no {base} arrived: {exc}") from exc
+            logger.warning("[mexc] buy {} not confirmed ({}); reconciled {} {} from balance", order["id"], exc,
+                           received, base)
+            return {"order_id": str(order["id"]), "units": received, "price": cost / received, "usd": cost,
+                    "fee_usd": 0.0}
         fill["units"] -= fill.pop("fee_base")          # a base-asset fee reduces what we hold
         return {"order_id": str(order["id"]), **fill}
 
@@ -622,7 +635,15 @@ class MexcSpotConnector:
         if qty <= 0:
             raise FatalConnectorError(f"nothing to sell: position {units}, free {held}")
         order = await self._call("create_order", sym, "market", "sell", qty)
-        fill = self.parse_fill(await self._wait_filled(str(order["id"]), sym), token_symbol.upper())
+        try:
+            fill = self.parse_fill(await self._wait_filled(str(order["id"]), sym), token_symbol.upper())
+        except ConnectorError as exc:
+            sold = held - await self.free_balance(token_symbol.upper())
+            if sold <= 0:
+                raise ConnectorError(f"sell {order['id']} state unknown and balance unchanged: {exc}") from exc
+            last = float((await self._call("fetch_ticker", sym))["last"])
+            logger.warning("[mexc] sell {} not confirmed ({}); reconciled {} sold at ~{}", order["id"], exc, sold, last)
+            return {"order_id": str(order["id"]), "units": sold, "price": last, "usd": sold * last, "fee_usd": 0.0}
         fill.pop("fee_base")
         return {"order_id": str(order["id"]), **fill}
 

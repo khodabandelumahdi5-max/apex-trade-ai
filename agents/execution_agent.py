@@ -11,7 +11,8 @@ from config import Settings, WatchToken
 from core.state import ExecutionState, RiskState
 from database import repository as repo
 from database.models import ProtectionStatus, Trade, TradeDirection, TradeStatus, utcnow
-from exchange_connector import ExchangeConnector, MexcSpotConnector, SolanaDEXConnector, walk_book
+from exchange_connector import (ExchangeConnector, FatalConnectorError, MexcSpotConnector, SolanaDEXConnector,
+                                walk_book)
 
 Venue = Literal["paper", "jupiter", "cex", "mexc"]
 
@@ -106,7 +107,16 @@ class ExecutionAgent(BaseAgent[ExecutionState]):
         if venue == "mexc":
             if self.mexc is None:
                 raise RuntimeError("MEXC trade open but MEXC connector unavailable")
-            fill = await self.mexc.market_sell(trade.symbol, units)
+            try:
+                fill = await self.mexc.market_sell(trade.symbol, units)
+            except FatalConnectorError as exc:
+                if "nothing to sell" not in str(exc) or mark_price is None:
+                    raise
+                # The coins are no longer on the account (sold manually / outside the bot): close the
+                # record at the current mark instead of retrying a sell forever.
+                self.log.warning("#{} {}: no balance on MEXC ({}); closing record at mark {}", trade.id,
+                                 trade.symbol, exc, mark_price)
+                return mark_price, mark_price * units, 0.0, "reconciled-no-balance"
             return fill["price"], fill["usd"], fill["fee_usd"], fill["order_id"]
         if venue == "jupiter":
             fill = await self.dex.execute_swap(trade.mint or "", "SELL", units)

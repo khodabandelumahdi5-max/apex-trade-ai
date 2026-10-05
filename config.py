@@ -99,7 +99,7 @@ class Settings(BaseModel):
     daily_loss_limit_pct: float = Field(3.0, gt=0)
     max_drawdown_pct: float = Field(10.0, gt=0)
     breakeven_trigger_pct: float = Field(1.5, gt=0)
-    breakeven_buffer_pct: float = Field(0.0, ge=0)
+    breakeven_buffer_pct: float = Field(0.25, ge=0)  # covers round-trip fees + spread
     trailing_stop_pct: float = Field(2.0, gt=0)
     # take-profit targets in R (R = entry − initial stop). 0 disables a target.
     tp1_r: float = Field(1.5, ge=0)

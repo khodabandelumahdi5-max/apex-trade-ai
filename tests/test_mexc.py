@@ -107,3 +107,37 @@ def test_walk_book_buy_and_sell():
     bids = [L(price=99, size=1), L(price=98, size=1)]
     assert walk_book(bids, units=2) == pytest.approx(98.5)
     assert walk_book(bids, units=3) == pytest.approx((99 + 98 + 98) / 3)      # thin book: rest at last level
+
+
+class SlowFake(FakeMexc):
+    """Order fills on the exchange but its status never confirms (network glitch)."""
+
+    async def fetch_order(self, oid, sym):
+        return {**self.orders[oid], "status": "open", "remaining": 1, "filled": 0}
+
+    async def fetch_ticker(self, sym):
+        return {"last": self.price}
+
+
+@pytest.mark.asyncio
+async def test_unconfirmed_buy_is_reconciled_not_dropped(monkeypatch):
+    fake = SlowFake(usdt=100)
+    c = connector(fake)
+    monkeypatch.setattr(c, "_wait_filled", _timeout)
+    fill = await c.market_buy_usd("SOL", 60.0)
+    assert fill["units"] == pytest.approx(0.5 * (1 - 0.0005))     # what actually arrived on the account
+    assert fill["price"] == pytest.approx(60.0 / fill["units"])
+
+
+@pytest.mark.asyncio
+async def test_unconfirmed_sell_is_reconciled(monkeypatch):
+    fake = SlowFake(sol=0.5)
+    c = connector(fake)
+    monkeypatch.setattr(c, "_wait_filled", _timeout)
+    fill = await c.market_sell("SOL", 0.5)
+    assert fill["units"] == pytest.approx(0.5) and fill["price"] == 120.0
+
+
+async def _timeout(*a, **k):
+    from exchange_connector import ConnectorError
+    raise ConnectorError("not filled within 15s")

@@ -32,8 +32,13 @@ def test_edge_prior_and_shrinkage():
     assert 0.5 < e.win_rate < 0.75 and e.payoff > 1.5 and e.samples == 40
 
 
+def test_breakeven_buffer_covers_fees():
+    upd = manage_position(pos(), 101.5, settings())               # default buffer 0.25 %
+    assert upd.stop_loss == pytest.approx(100.25)
+
+
 def test_breakeven_triggers_exactly_at_threshold():
-    s = settings()
+    s = settings(breakeven_buffer_pct=0.0)
     below = manage_position(pos(), 101.49, s)
     assert below.protection_status == ProtectionStatus.INITIAL_STOP and below.stop_loss == 97.0
     at = manage_position(pos(), 101.5, s)
