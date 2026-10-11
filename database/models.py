@@ -253,4 +253,60 @@ class Invoice(Base):
         return f"{self.amount_units // 1_000_000}.{self.amount_units % 1_000_000:06d}".rstrip("0").rstrip(".")
 
 
+class Challenge(Base):
+    """A paper-trading competition: every participant starts with the same virtual balance and trades at live
+    MEXC prices. Virtual accounts make the ranking fair (no deposits mid-contest, no hidden accounts) and no
+    customer exchange keys are needed. Prizes are fixed by the organiser, not paid out of entry fees."""
+
+    __tablename__ = "challenges"
+    id: Mapped[int] = mapped_column(PK, primary_key=True, autoincrement=True)
+    title: Mapped[str] = mapped_column(String(120), nullable=False)
+    symbols: Mapped[str] = mapped_column(String(255), nullable=False)          # comma-separated, e.g. "SOL,JUP"
+    starting_balance: Mapped[float] = mapped_column(Float, default=10_000.0, nullable=False)
+    fee_bps: Mapped[float] = mapped_column(Float, default=10.0, nullable=False)
+    prize_text: Mapped[str] = mapped_column(String(255), default="", nullable=False)
+    start_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    end_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    finalized: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    participants: Mapped[list["ChallengeParticipant"]] = relationship(back_populates="challenge",
+                                                                      cascade="all, delete-orphan")
+
+    @property
+    def symbol_list(self) -> list[str]:
+        return [x.strip().upper() for x in self.symbols.split(",") if x.strip()]
+
+
+class ChallengeParticipant(Base):
+    __tablename__ = "challenge_participants"
+    id: Mapped[int] = mapped_column(PK, primary_key=True, autoincrement=True)
+    challenge_id: Mapped[int] = mapped_column(PK, ForeignKey("challenges.id", ondelete="CASCADE"), index=True,
+                                              nullable=False)
+    user_id: Mapped[int] = mapped_column(PK, ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False)
+    cash: Mapped[float] = mapped_column(Float, nullable=False)
+    holdings: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)   # {"SOL": 1.25}
+    trades_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    equity: Mapped[float] = mapped_column(Float, nullable=False)
+    peak_equity: Mapped[float] = mapped_column(Float, nullable=False)
+    max_drawdown_pct: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    roi_pct: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    rank: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    joined_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    challenge: Mapped[Challenge] = relationship(back_populates="participants")
+
+    __table_args__ = (UniqueConstraint("challenge_id", "user_id", name="uq_challenge_user"),)
+
+
+class ChallengeOrder(Base):
+    __tablename__ = "challenge_orders"
+    id: Mapped[int] = mapped_column(PK, primary_key=True, autoincrement=True)
+    participant_id: Mapped[int] = mapped_column(PK, ForeignKey("challenge_participants.id", ondelete="CASCADE"),
+                                                index=True, nullable=False)
+    symbol: Mapped[str] = mapped_column(String(32), nullable=False)
+    side: Mapped[str] = mapped_column(String(4), nullable=False)
+    qty: Mapped[float] = mapped_column(Float, nullable=False)
+    price: Mapped[float] = mapped_column(Float, nullable=False)
+    fee_usd: Mapped[float] = mapped_column(Float, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
 HYPERTABLES: tuple[str, ...] = (MarketTick.__tablename__, WhaleTransaction.__tablename__)

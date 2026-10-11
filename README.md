@@ -106,6 +106,16 @@ pytest -q                     # unit tests
 - An expired subscription pauses trading (`subscription_allows_trading`). It does not disable the account.
 - Not built on purpose: running bots on customers' exchange accounts. See "Things to know".
 
+## Paper-trading competitions (competition/)
+
+`python -m competition create|join|buy|sell|board|run` (see `competition/__main__.py`).
+- Everyone starts with the same virtual balance and trades at live MEXC prices: BUY at the ask, SELL at the bid,
+  plus fees. No customer exchange keys, and no deposits mid-contest to inflate ROI.
+- Ranking is by ROI. Ties go to the lower max drawdown, then to who joined first. Participants with no trades are
+  not ranked. The first update after the end time is final.
+- Joining needs an active subscription (billing/). Prizes are a fixed text set by the organiser. There is
+  deliberately no entry-fee prize pool: paid entry plus a prize pool counts as gambling in many countries.
+
 ## Things to know before trusting it
 
 - Selling access to a strategy, or trading other people's accounts, is regulated as investment advice or
