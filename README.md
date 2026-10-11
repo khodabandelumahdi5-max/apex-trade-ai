@@ -106,15 +106,37 @@ pytest -q                     # unit tests
 - An expired subscription pauses trading (`subscription_allows_trading`). It does not disable the account.
 - Not built on purpose: running bots on customers' exchange accounts. See "Things to know".
 
-## Paper-trading competitions (competition/)
+## AlphaDuel: 21-day discipline challenge (competition/, tgbot/, webapp/)
 
-`python -m competition create|join|buy|sell|board|run` (see `competition/__main__.py`).
-- Everyone starts with the same virtual balance and trades at live MEXC prices: BUY at the ask, SELL at the bid,
-  plus fees. No customer exchange keys, and no deposits mid-contest to inflate ROI.
-- Ranking is by ROI. Ties go to the lower max drawdown, then to who joined first. Participants with no trades are
-  not ranked. The first update after the end time is final.
-- Joining needs an active subscription (billing/). Prizes are a fixed text set by the organiser. There is
-  deliberately no entry-fee prize pool: paid entry plus a prize pool counts as gambling in many countries.
+Paper trading with the same virtual balance for everyone at live MEXC prices: BUY at the ask, SELL at the bid,
+plus fees. No customer exchange keys, and no deposits mid-contest to inflate ROI.
+
+**Rules** (set per challenge; 0 turns a rule off):
+
+| Rule | Default |
+|---|---|
+| Stop-loss on every buy; max risk per trade, fees included | 1 % of equity |
+| Daily loss (UTC day) above the limit | 3 %, disqualified |
+| Drawdown from the peak above the limit | 10 %, disqualified |
+| Losing round trips in a row before a pause | 3, then a 24 h pause |
+| Entries per day | 5 |
+
+- Stops can only be raised. Disqualification closes all positions at the bid.
+- A refused rule-breaking order counts as a rule break. Discipline score = 100 − 10 × rule breaks.
+- Ranking: discipline, then ROI, then lower drawdown, then who joined first. The first tick after the end time is final.
+- Joining needs an active subscription. Prizes are a fixed text set by the organiser. There is deliberately no
+  entry-fee prize pool: paid entry plus a prize pool counts as gambling in many countries.
+
+**Run:**
+- `python -m tgbot` starts the Telegram bot (long polling).
+  - Commands: /subscribe, /status, /challenges, /join, /buy ID SYMBOL USD STOP, /sell, /stop, /me, /board.
+  - Every minute it matches USDT payments and ticks every live challenge (stops, rules, ranking).
+  - It sends stop-hit, near-stop, pause and disqualification messages.
+  - Run one copy only. Do not also run `python -m competition run`.
+- `python -m webapp` starts the Mini App: a read-only leaderboard plus your stats and equity curve.
+  - Users are verified with Telegram's signed initData. It needs HTTPS: the VPS installer serves it at
+    `https://app.<your-host>`.
+- `python -m competition create "AlphaDuel 21-day" SOL,JUP 21 "prize text"` creates a challenge (admin CLI).
 
 ## Things to know before trusting it
 

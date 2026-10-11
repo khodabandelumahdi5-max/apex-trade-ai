@@ -94,6 +94,25 @@ RestartSec=10
 WantedBy=multi-user.target
 EOF
 
+for unit in "apex-tgbot:Telegram bot (AlphaDuel):tgbot" "apex-miniapp:Telegram Mini App API:webapp"; do
+  IFS=: read -r name desc module <<<"$unit"
+  cat > /etc/systemd/system/$name.service <<EOF
+[Unit]
+Description=$desc
+After=network-online.target
+
+[Service]
+User=$APP_USER
+WorkingDirectory=$APP_DIR
+ExecStart=$APP_DIR/.venv/bin/python -m $module
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+EOF
+done
+
 echo "[6/6] HTTPS dashboard + firewall..."
 PUBLIC_IP=$(curl -fsS https://api.ipify.org)
 HOST="${PUBLIC_IP//./-}.sslip.io"
@@ -104,6 +123,9 @@ $HOST {
 		$DASH_USER $HASH
 	}
 	reverse_proxy 127.0.0.1:8501
+}
+app.$HOST {
+	reverse_proxy 127.0.0.1:8080
 }
 EOF
 ufw allow OpenSSH >/dev/null && ufw allow 80/tcp >/dev/null && ufw allow 443/tcp >/dev/null
@@ -125,4 +147,9 @@ Bot log (live): sudo journalctl -u apex-engine -f
 Check MEXC key: sudo -u $APP_USER bash -c 'cd $APP_DIR && .venv/bin/python check_mexc.py'
 Update bot    : sudo bash $APP_DIR/deploy/update.sh
 Mode is PAPER until you change TRADING_MODE in .env.
+
+Telegram (optional): put TELEGRAM_BOT_TOKEN, TRON_RECEIVE_ADDRESS and
+  MINIAPP_URL=https://app.$HOST  in $ENV, then
+  sudo systemctl enable --now apex-tgbot apex-miniapp
+  and in @BotFather: /setmenubutton -> https://app.$HOST
 EOF

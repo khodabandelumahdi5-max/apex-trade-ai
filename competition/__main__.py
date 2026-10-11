@@ -1,11 +1,14 @@
-"""Paper-trading competitions.
+"""21-day discipline challenges (paper trading at live MEXC prices).
 
-    python -m competition create "Weekly SOL/JUP duel" SOL,JUP 7 [PRIZE TEXT]   # starts now, lasts 7 days
+    python -m competition create "AlphaDuel 21-day" SOL,JUP 21 [PRIZE TEXT]   # starts now
     python -m competition join CHALLENGE_ID EMAIL
-    python -m competition buy CHALLENGE_ID EMAIL SYMBOL USD
-    python -m competition sell CHALLENGE_ID EMAIL SYMBOL [QTY]                  # no QTY = sell all
-    python -m competition board CHALLENGE_ID                                    # refresh and print the leaderboard
-    python -m competition run CHALLENGE_ID                                      # refresh every minute until final
+    python -m competition buy CHALLENGE_ID EMAIL SYMBOL USD STOP
+    python -m competition sell CHALLENGE_ID EMAIL SYMBOL [QTY]                 # no QTY = sell all
+    python -m competition stop CHALLENGE_ID EMAIL SYMBOL NEW_STOP              # raise a stop
+    python -m competition board CHALLENGE_ID                                   # tick once and print the board
+    python -m competition run CHALLENGE_ID                                     # tick every minute until final
+
+If the Telegram bot (python -m tgbot) is running, it already ticks every live challenge: don't also use `run`.
 """
 from __future__ import annotations
 
@@ -16,21 +19,31 @@ from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
 from sqlalchemy import select
 
-from competition.engine import ChallengeError, Quote, join, place_order, update_leaderboard
+from competition import engine
+from competition.engine import ChallengeError, RuleViolation
 
 
-async def _quotes(mexc, symbols: list[str]) -> dict[str, Quote]:
+async def fetch_quotes(mexc, symbols: list[str]) -> dict[str, engine.Quote]:
     out = {}
     for sym in symbols:
         m = await mexc.fetch_ticker(sym, depth=5)
-        out[sym] = Quote(bid=m.bid or m.price, ask=m.ask or m.price)
+        out[sym] = engine.Quote(bid=m.bid or m.price, ask=m.ask or m.price)
     return out
+
+
+def format_board(ch, rows, names: dict[int, str]) -> str:
+    lines = [f"{ch.title}  ({'FINAL' if ch.finalized else 'live'})  prize: {ch.prize_text or '-'}"]
+    for p in rows:
+        lines.append(f"  {p.rank or '-':>3}  {names.get(p.user_id, '?'):<16} ROI {p.roi_pct:+8.2f}%  "
+                     f"discipline {engine.discipline_score(p):3.0f}  maxDD {p.max_drawdown_pct:5.2f}%  "
+                     f"trades {p.trades_count:<3} {p.status}")
+    return "\n".join(lines)
 
 
 async def _run(argv: list[str]) -> int:
     from config import get_settings
     from database.connection import dispose_engine, get_session, init_db
-    from database.models import Challenge, ChallengeParticipant, User
+    from database.models import Challenge, User
     from exchange_connector import MexcSpotConnector
 
     settings = get_settings()
@@ -41,13 +54,13 @@ async def _run(argv: list[str]) -> int:
         async def board(cid: int) -> bool:
             async with get_session() as s:
                 ch = await s.get(Challenge, cid)
-                rows = await update_leaderboard(s, ch, {} if ch.finalized else await _quotes(mexc, ch.symbol_list))
-                emails = {u.id: u.email for u in (await s.execute(select(User))).scalars()}
-                print(f"\n{ch.title}  ({'FINAL' if ch.finalized else 'live'})  prize: {ch.prize_text or '-'}")
-                for p in rows:
-                    name = emails.get(p.user_id, "?").split("@")[0]      # never show full e-mail addresses
-                    print(f"  {p.rank or '-':>3}  {name:<16} ROI {p.roi_pct:+8.2f}%  equity ${p.equity:,.2f}  "
-                          f"maxDD {p.max_drawdown_pct:5.2f}%  trades {p.trades_count}")
+                if ch is None:
+                    raise ChallengeError(f"no challenge {cid}")
+                for e in await engine.tick(s, ch, {} if ch.finalized else await fetch_quotes(mexc, ch.symbol_list)):
+                    print(f"  event: {e.kind} user {e.user_id} {e.symbol or ''} {e.detail}")
+                rows = engine.rank(await engine.participants(s, ch))
+                names = {u.id: engine.public_name(u) for u in (await s.execute(select(User))).scalars()}
+                print(format_board(ch, rows, names))
                 return ch.finalized
 
         if cmd == "create" and len(args) in (3, 4):
@@ -62,20 +75,30 @@ async def _run(argv: list[str]) -> int:
                 s.add(ch)
                 await s.flush()
                 print(f"challenge {ch.id} created, ends {ch.end_time:%Y-%m-%d %H:%M} UTC")
-        elif cmd in {"join", "buy", "sell"} and len(args) >= 2:
+        elif cmd in {"join", "buy", "sell", "stop"} and len(args) >= 2:
             async with get_session() as s:
                 ch = await s.get(Challenge, int(args[0]))
                 user = (await s.execute(select(User).where(User.email == args[1].strip().lower()))).scalar_one()
-                p = await join(s, ch, user)
-                if cmd == "join":
-                    print(f"joined with ${ch.starting_balance:,.0f} virtual USDT")
-                else:
-                    sym = args[2].upper()
-                    q = (await _quotes(mexc, [sym]))[sym]
-                    o = await place_order(s, ch, p, sym, cmd.upper(), q,
-                                          usd=float(args[3]) if cmd == "buy" else None,
-                                          qty=float(args[3]) if cmd == "sell" and len(args) > 3 else None)
-                    print(f"{o.side} {o.qty:.6f} {o.symbol} @ {o.price}  fee ${o.fee_usd:.2f}  cash ${p.cash:,.2f}")
+                try:
+                    if cmd == "join":
+                        await engine.join(s, ch, user)
+                        print(f"joined with ${ch.starting_balance:,.0f} virtual USDT")
+                    else:
+                        p = await engine.get_participant(s, ch, user)
+                        sym = args[2].upper()
+                        q = (await fetch_quotes(mexc, [sym]))[sym]
+                        if cmd == "buy":
+                            o = await engine.buy(s, ch, p, sym, q, usd=float(args[3]), stop=float(args[4]))
+                        elif cmd == "sell":
+                            o, _ = await engine.sell(s, ch, p, sym, q, qty=float(args[3]) if len(args) > 3 else None)
+                        else:
+                            await engine.set_stop(ch, p, sym, float(args[3]), q)
+                            print(f"{sym} stop raised to {args[3]}")
+                            return 0
+                        print(f"{o.side} {o.qty:.6f} {o.symbol} @ {o.price}  fee ${o.fee_usd:.2f}  cash ${p.cash:,.2f}")
+                except RuleViolation as exc:             # caught inside the session so the rule break is saved
+                    print(f"refused (rule): {exc}")
+                    return 1
         elif cmd == "board" and len(args) == 1:
             await board(int(args[0]))
         elif cmd == "run" and len(args) == 1:

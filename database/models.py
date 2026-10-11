@@ -163,7 +163,10 @@ class PortfolioSnapshot(Base):
 
 
 class User(Base):
-    """Account for a future multi-user deployment. Passwords: database.secure.hash_password (scrypt)."""
+    """Account (e-mail + password via the CLI, or Telegram via the bot). Passwords: database.secure.hash_password.
+
+    Telegram users get a placeholder e-mail tg<id>@telegram.invalid and the unusable password "!" so the table
+    stays compatible with databases created before the Telegram columns existed."""
 
     __tablename__ = "users"
     id: Mapped[int] = mapped_column(PK, primary_key=True, autoincrement=True)
@@ -172,6 +175,8 @@ class User(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     subscription_expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    telegram_id: Mapped[int | None] = mapped_column(BigInteger, unique=True, index=True, nullable=True)
+    display_name: Mapped[str | None] = mapped_column(String(64), nullable=True)
     api_keys: Mapped[list["ExchangeAPIKey"]] = relationship(back_populates="user", cascade="all, delete-orphan")
 
     @validates("email")
@@ -253,10 +258,17 @@ class Invoice(Base):
         return f"{self.amount_units // 1_000_000}.{self.amount_units % 1_000_000:06d}".rstrip("0").rstrip(".")
 
 
+class ChallengeStatus(str, enum.Enum):
+    ACTIVE = "ACTIVE"
+    DISQUALIFIED = "DISQUALIFIED"
+    COMPLETED = "COMPLETED"
+
+
 class Challenge(Base):
-    """A paper-trading competition: every participant starts with the same virtual balance and trades at live
-    MEXC prices. Virtual accounts make the ranking fair (no deposits mid-contest, no hidden accounts) and no
-    customer exchange keys are needed. Prizes are fixed by the organiser, not paid out of entry fees."""
+    """A paper-trading discipline challenge (default 21 days): everyone starts with the same virtual balance and
+    trades at live MEXC prices. Virtual accounts keep the ranking fair (no deposits mid-contest, no hidden
+    accounts) and no customer exchange keys are needed. Prizes are fixed by the organiser, never paid out of
+    entry fees. Rule values of 0 switch that rule off."""
 
     __tablename__ = "challenges"
     id: Mapped[int] = mapped_column(PK, primary_key=True, autoincrement=True)
@@ -268,6 +280,13 @@ class Challenge(Base):
     start_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     end_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     finalized: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # discipline rules
+    max_risk_per_trade_pct: Mapped[float] = mapped_column(Float, default=1.0, server_default="1", nullable=False)
+    daily_loss_limit_pct: Mapped[float] = mapped_column(Float, default=3.0, server_default="3", nullable=False)
+    max_drawdown_pct: Mapped[float] = mapped_column(Float, default=10.0, server_default="10", nullable=False)
+    max_consecutive_losses: Mapped[int] = mapped_column(Integer, default=3, server_default="3", nullable=False)
+    cooldown_hours: Mapped[float] = mapped_column(Float, default=24.0, server_default="24", nullable=False)
+    max_entries_per_day: Mapped[int] = mapped_column(Integer, default=5, server_default="5", nullable=False)
     participants: Mapped[list["ChallengeParticipant"]] = relationship(back_populates="challenge",
                                                                       cascade="all, delete-orphan")
 
@@ -283,7 +302,8 @@ class ChallengeParticipant(Base):
                                               nullable=False)
     user_id: Mapped[int] = mapped_column(PK, ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False)
     cash: Mapped[float] = mapped_column(Float, nullable=False)
-    holdings: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)   # {"SOL": 1.25}
+    # {"SOL": {"qty": 1.25, "cost": 180.4, "stop": 130.0, "warned": false}}; cost includes the entry fee
+    holdings: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
     trades_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     equity: Mapped[float] = mapped_column(Float, nullable=False)
     peak_equity: Mapped[float] = mapped_column(Float, nullable=False)
@@ -291,6 +311,19 @@ class ChallengeParticipant(Base):
     roi_pct: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
     rank: Mapped[int | None] = mapped_column(Integer, nullable=True)
     joined_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), default=ChallengeStatus.ACTIVE.value,
+                                        server_default=ChallengeStatus.ACTIVE.value, nullable=False)
+    status_reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    day_key: Mapped[str | None] = mapped_column(String(10), nullable=True)          # UTC date "2026-10-11"
+    day_start_equity: Mapped[float | None] = mapped_column(Float, nullable=True)
+    entries_today: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    consecutive_losses: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    cooldown_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    rule_breaks: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    realized_pnl: Mapped[float] = mapped_column(Float, default=0.0, server_default="0", nullable=False)
+    wins: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    losses: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    last_point_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     challenge: Mapped[Challenge] = relationship(back_populates="participants")
 
     __table_args__ = (UniqueConstraint("challenge_id", "user_id", name="uq_challenge_user"),)
@@ -306,7 +339,20 @@ class ChallengeOrder(Base):
     qty: Mapped[float] = mapped_column(Float, nullable=False)
     price: Mapped[float] = mapped_column(Float, nullable=False)
     fee_usd: Mapped[float] = mapped_column(Float, nullable=False)
+    reason: Mapped[str] = mapped_column(String(32), default="manual", server_default="manual", nullable=False)
+    pnl: Mapped[float | None] = mapped_column(Float, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
+class ChallengeEquityPoint(Base):
+    """Equity curve for the Mini App chart (one point per participant every 15 minutes at most)."""
+
+    __tablename__ = "challenge_equity_points"
+    id: Mapped[int] = mapped_column(PK, primary_key=True, autoincrement=True)
+    participant_id: Mapped[int] = mapped_column(PK, ForeignKey("challenge_participants.id", ondelete="CASCADE"),
+                                                index=True, nullable=False)
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    equity: Mapped[float] = mapped_column(Float, nullable=False)
 
 
 HYPERTABLES: tuple[str, ...] = (MarketTick.__tablename__, WhaleTransaction.__tablename__)

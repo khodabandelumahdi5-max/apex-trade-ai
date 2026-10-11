@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>AlphaDuel</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  :root {
+    --bg: var(--tg-theme-bg-color, #121212); --fg: var(--tg-theme-text-color, #f2f2f2);
+    --muted: var(--tg-theme-hint-color, #9a9a9a); --card: var(--tg-theme-secondary-bg-color, #1e1e1e);
+    --accent: var(--tg-theme-button-color, #2f80ed); --good: #2fbf71; --bad: #e5484d;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 16px; background: var(--bg); color: var(--fg);
+         font: 15px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  .muted { color: var(--muted); font-size: 13px; }
+  select { width: 100%; padding: 10px; margin: 12px 0; border-radius: 10px; border: 0;
+           background: var(--card); color: var(--fg); font-size: 15px; }
+  .card { background: var(--card); border-radius: 12px; padding: 14px; margin-bottom: 12px; }
+  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 8px; }
+  .stat b { display: block; font-size: 17px; }
+  .good { color: var(--good); } .bad { color: var(--bad); }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  td, th { padding: 7px 4px; text-align: left; border-bottom: 1px solid rgba(127,127,127,.15); }
+  th { color: var(--muted); font-weight: 500; font-size: 12px; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  svg { width: 100%; height: 110px; display: block; margin-top: 10px; }
+  .rules li { margin: 2px 0; }
+</style>
+</head>
+<body>
+  <h1>⚡ AlphaDuel</h1>
+  <div class="muted">21-day trading discipline challenge · paper trading at live MEXC prices · not financial advice</div>
+  <select id="challenge" aria-label="Challenge"></select>
+  <div id="me" class="card"></div>
+  <div class="card"><div class="muted" id="rules-title">Rules</div><ul class="rules muted" id="rules"></ul></div>
+  <div class="card">
+    <div class="muted" id="board-title">Leaderboard</div>
+    <table><thead><tr><th>#</th><th>Trader</th><th class="num">ROI</th><th class="num">Disc.</th><th class="num">DD</th></tr></thead>
+      <tbody id="board"></tbody></table>
+  </div>
+  <script src="/app.js"></script>
+</body>
+</html>
