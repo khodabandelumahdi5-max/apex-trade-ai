@@ -85,6 +85,23 @@ def stop_loss_risk(qty: float, cost: float, stop: float, fee_rate: float) -> flo
     return cost - qty * stop * (1 - fee_rate)
 
 
+def max_buy_usd(ch: Challenge, p: ChallengeParticipant, symbol: str, quote: Quote, stop: float) -> float:
+    """Largest BUY (USD incl. fee) that keeps the whole position's stop-loss risk within the per-trade limit,
+    also capped by cash. 0 when nothing fits (e.g. the existing position already uses the budget)."""
+    if stop <= 0 or stop >= quote.ask:
+        return 0.0
+    f = ch.fee_bps / 10_000
+    h = (p.holdings or {}).get(symbol.upper(), {"qty": 0.0, "cost": 0.0})
+    cash = max(0.0, p.cash)
+    if not ch.max_risk_per_trade_pct:
+        return cash
+    budget = p.equity * ch.max_risk_per_trade_pct / 100 - stop_loss_risk(h["qty"], h["cost"], stop, f)
+    risk_per_usd = 1 - (1 - f) ** 2 * stop / quote.ask          # loss per $ spent if the stop is hit
+    if budget <= 0:
+        return 0.0
+    return min(cash, budget / risk_per_usd * (1 - 1e-9))
+
+
 def _check_quote(q: Quote) -> None:
     if not (q.bid > 0 and q.ask > 0 and q.bid <= q.ask):
         raise ChallengeError("invalid quote")
@@ -169,7 +186,7 @@ async def buy(s: AsyncSession, ch: Challenge, p: ChallengeParticipant, symbol: s
     risk = stop_loss_risk(new_qty, new_cost, stop, fee_rate)          # whole position, new stop
     budget = p.equity * ch.max_risk_per_trade_pct / 100
     if ch.max_risk_per_trade_pct and risk > budget + 1e-9:
-        max_usd = usd * budget / risk if risk > 0 else 0
+        max_usd = max_buy_usd(ch, p, symbol, quote, stop)
         raise _violate(p, f"risk ${risk:,.2f} > {ch.max_risk_per_trade_pct}% of equity (${budget:,.2f}); "
                           f"with this stop buy at most ≈${max_usd:,.0f}")
 

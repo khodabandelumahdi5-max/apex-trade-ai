@@ -6,7 +6,7 @@ APP_DIR=/opt/apex-trade-ai
 sudo -u apex git -C $APP_DIR pull --ff-only
 sudo -u apex $APP_DIR/.venv/bin/pip install -q -r $APP_DIR/requirements.txt
 systemctl restart apex-engine apex-dashboard
-for u in apex-tgbot apex-miniapp; do systemctl is-enabled --quiet $u 2>/dev/null && systemctl restart $u; done
+for u in apex-tgbot; do systemctl is-enabled --quiet $u 2>/dev/null && systemctl restart $u; done
 sleep 3
 systemctl --no-pager --lines=0 status apex-engine apex-dashboard | grep -E "●|Active:"
 echo "Updated to $(git -C $APP_DIR log --oneline -1)"

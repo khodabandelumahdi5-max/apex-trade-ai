@@ -133,9 +133,17 @@ plus fees. No customer exchange keys, and no deposits mid-contest to inflate ROI
   - Every minute it matches USDT payments and ticks every live challenge (stops, rules, ranking).
   - It sends stop-hit, near-stop, pause and disqualification messages.
   - Run one copy only. Do not also run `python -m competition run`.
-- `python -m webapp` starts the Mini App: a read-only leaderboard plus your stats and equity curve.
-  - Users are verified with Telegram's signed initData. It needs HTTPS: the VPS installer serves it at
-    `https://app.<your-host>`.
+- The Mini App is a full app inside Telegram, served by the same `python -m tgbot` process on
+  127.0.0.1:8080. It shares the bot's write lock and price cache.
+  - **Trade tab:** join a challenge, see live prices and stats, and see your equity chart.
+  - **Buying:** a stop is required. Buttons set a −2/−3/−5 % stop. A live preview shows the loss if the stop is hit.
+    "max size" calculates the largest buy that stays within the risk rule.
+  - **Open positions:** move the stop to breakeven, raise it, or sell all.
+  - **Leaderboard tab** and **Account tab** (USDT invoice with copy buttons and an expiry countdown).
+  - Users are verified with Telegram's signed initData.
+  - It needs HTTPS. The VPS installer serves it at `https://app.<your-host>`. In @BotFather set the menu button to
+    that URL.
+  - `python -m webapp` runs the page alone in read-only mode (no trading), for testing.
 - `python -m competition create "AlphaDuel 21-day" SOL,JUP 21 "prize text"` creates a challenge (admin CLI).
 
 ## Things to know before trusting it

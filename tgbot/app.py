@@ -1,5 +1,8 @@
 """Telegram front-end (python-telegram-bot 21, long polling: no public URL or webhook needed).
 
+The same process serves the Mini App (webapp/server.py) on MINIAPP_HOST:MINIAPP_PORT (default 127.0.0.1:8080,
+MINIAPP_PORT=0 disables it), so bot commands, app requests and jobs share one write lock and one price cache.
+
 Background jobs (every 60 s): match USDT payments and notify payers; tick every live challenge (stops, rules,
 ranking) and push stop / near-stop / cooldown / disqualification messages to the trader.
 """
@@ -36,7 +39,10 @@ HELP = (
 class Bot:
     def __init__(self, token: str, mexc) -> None:
         self.mexc = mexc
-        self.app = Application.builder().token(token).concurrent_updates(True).build()
+        self.token = token
+        self._web_runner = None
+        self.app = (Application.builder().token(token).concurrent_updates(True)
+                    .post_init(self._start_web).post_shutdown(self._stop_web).build())
         self._last_cmd: dict[int, float] = {}
         self._quote_cache: dict[str, tuple[float, Quote]] = {}
         a = self.app
@@ -49,6 +55,19 @@ class Bot:
         a.add_handler(CallbackQueryHandler(self.button))
         a.job_queue.run_repeating(self.payments_job, interval=60, first=10)
         a.job_queue.run_repeating(self.challenges_job, interval=60, first=20)
+
+    # ------------------------------------------------------------------ Mini App server (same process)
+    async def _start_web(self, _: Application) -> None:
+        if os.getenv("MINIAPP_PORT", "8080").strip() in {"", "0"}:
+            return
+        from webapp.server import build_app, start_site
+        self._web_runner = await start_site(build_app(self.token, self.quote))
+        logger.info("Mini App server on http://{}:{}", os.getenv("MINIAPP_HOST", "127.0.0.1"),
+                    os.getenv("MINIAPP_PORT", "8080"))
+
+    async def _stop_web(self, _: Application) -> None:
+        if self._web_runner is not None:
+            await self._web_runner.cleanup()
 
     # ------------------------------------------------------------------ helpers
     def _throttled(self, uid: int) -> bool:

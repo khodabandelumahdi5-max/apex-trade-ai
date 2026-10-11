@@ -52,21 +52,29 @@ def subscription_text(user: User) -> str:
     return "❌ No active subscription. Tap <b>Subscribe</b> to get a USDT (TRC20) invoice."
 
 
-async def invoice_text(s: AsyncSession, user: User) -> str:
+async def open_invoice(s: AsyncSession, user: User) -> Invoice | None:
+    """The user's open invoice (reused while it has 30+ minutes left), or a new one. None if not configured."""
     address = os.getenv("TRON_RECEIVE_ADDRESS", "").strip()
     if not address:
-        return "Payments are not configured yet. Please try again later."
+        return None
     now = datetime.now(timezone.utc)
     inv = (await s.execute(select(Invoice).where(Invoice.user_id == user.id,
                                                  Invoice.status == InvoiceStatus.PENDING)
                            .order_by(Invoice.created_at.desc()))).scalars().first()
     if inv is None or _aware(inv.expires_at) <= now + timedelta(minutes=30):
         inv = await create_invoice(s, user, address)          # one open invoice per user; no spam invoices
-    left = (_aware(inv.expires_at) - now).total_seconds() / 3600
+    return inv
+
+
+async def invoice_text(s: AsyncSession, user: User) -> str:
+    inv = await open_invoice(s, user)
+    if inv is None:
+        return "Payments are not configured yet. Please try again later."
+    left = (_aware(inv.expires_at) - datetime.now(timezone.utc)).total_seconds() / 3600
     return (f"💳 <b>Subscription: {inv.days} days</b>\n\n"
             f"Send <b>exactly</b> <code>{e(inv.amount_usdt)}</code> USDT\n"
             f"Network: <b>TRON (TRC20)</b> only\n"
-            f"To: <code>{e(address)}</code>\n\n"
+            f"To: <code>{e(inv.address)}</code>\n\n"
             f"⏳ Valid for {left:.0f} h. The exact amount identifies your payment: a different amount, another "
             f"token or another network cannot be matched automatically. You get a message here after the "
             f"transfer is confirmed (usually 1–3 minutes).\n\n"

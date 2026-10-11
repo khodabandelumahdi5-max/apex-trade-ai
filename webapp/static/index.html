@@ -7,40 +7,82 @@
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <style>
   :root {
-    --bg: var(--tg-theme-bg-color, #121212); --fg: var(--tg-theme-text-color, #f2f2f2);
-    --muted: var(--tg-theme-hint-color, #9a9a9a); --card: var(--tg-theme-secondary-bg-color, #1e1e1e);
-    --accent: var(--tg-theme-button-color, #2f80ed); --good: #2fbf71; --bad: #e5484d;
+    --bg: var(--tg-theme-bg-color, #111315); --fg: var(--tg-theme-text-color, #f2f3f5);
+    --muted: var(--tg-theme-hint-color, #8d939b); --card: var(--tg-theme-secondary-bg-color, #1c1f23);
+    --accent: var(--tg-theme-button-color, #2f80ed); --accent-fg: var(--tg-theme-button-text-color, #fff);
+    --good: #2fbf71; --bad: #e5484d; --warn: #f5a524; --line: rgba(127,127,127,.18);
   }
-  * { box-sizing: border-box; }
-  body { margin: 0; padding: 16px; background: var(--bg); color: var(--fg);
-         font: 15px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
-  h1 { font-size: 22px; margin: 0 0 4px; }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; background: var(--bg); color: var(--fg); }
+  body { font: 15px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; padding: 14px 16px 84px; }
+  h1 { font-size: 20px; margin: 0; }
+  h2 { font-size: 15px; margin: 0 0 10px; }
+  .row { display: flex; align-items: center; gap: 8px; }
+  .between { justify-content: space-between; }
   .muted { color: var(--muted); font-size: 13px; }
-  select { width: 100%; padding: 10px; margin: 12px 0; border-radius: 10px; border: 0;
-           background: var(--card); color: var(--fg); font-size: 15px; }
-  .card { background: var(--card); border-radius: 12px; padding: 14px; margin-bottom: 12px; }
-  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 8px; }
-  .stat b { display: block; font-size: 17px; }
-  .good { color: var(--good); } .bad { color: var(--bad); }
+  .small { font-size: 12px; }
+  .card { background: var(--card); border-radius: 14px; padding: 14px; margin: 12px 0; }
+  .chip { font-size: 12px; padding: 3px 9px; border-radius: 999px; background: var(--card); }
+  .good { color: var(--good); } .bad { color: var(--bad); } .warn { color: var(--warn); }
+  .banner { border-radius: 12px; padding: 10px 12px; margin: 12px 0; font-size: 14px; }
+  .banner.bad { background: rgba(229,72,77,.14); } .banner.warn { background: rgba(245,165,36,.14); color: var(--fg); }
+  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+  .stat b { display: block; font-size: 17px; font-variant-numeric: tabular-nums; }
+  button { font: inherit; border: 0; border-radius: 10px; padding: 11px 14px; cursor: pointer;
+           background: var(--accent); color: var(--accent-fg); font-weight: 600; }
+  button.ghost { background: transparent; color: var(--accent); border: 1px solid var(--line); font-weight: 500; }
+  button.danger { background: var(--bad); color: #fff; }
+  button.wide { width: 100%; }
+  button:disabled { opacity: .45; cursor: default; }
+  button.sm { padding: 7px 10px; font-size: 13px; }
+  .seg { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+  .seg button { flex: 1; background: transparent; color: var(--fg); border: 1px solid var(--line); font-weight: 500; }
+  .seg button.on { background: var(--accent); color: var(--accent-fg); border-color: transparent; }
+  label { display: block; font-size: 12px; color: var(--muted); margin: 10px 0 4px; }
+  input { width: 100%; font: inherit; font-size: 16px; padding: 11px 12px; border-radius: 10px; border: 1px solid var(--line);
+          background: var(--bg); color: var(--fg); font-variant-numeric: tabular-nums; }
+  .inputrow { display: flex; gap: 6px; } .inputrow input { flex: 1; } .inputrow button { flex: none; }
+  select { width: 100%; padding: 10px; border-radius: 10px; border: 1px solid var(--line); background: var(--card); color: var(--fg); font-size: 15px; }
   table { width: 100%; border-collapse: collapse; font-size: 14px; }
-  td, th { padding: 7px 4px; text-align: left; border-bottom: 1px solid rgba(127,127,127,.15); }
+  td, th { padding: 8px 4px; text-align: left; border-bottom: 1px solid var(--line); }
   th { color: var(--muted); font-weight: 500; font-size: 12px; }
-  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
-  svg { width: 100%; height: 110px; display: block; margin-top: 10px; }
-  .rules li { margin: 2px 0; }
+  .num { text-align: right; font-variant-numeric: tabular-nums; }
+  tr.me td { font-weight: 700; }
+  svg.chart { width: 100%; height: 120px; display: block; margin-top: 12px; }
+  .pos { border-top: 1px solid var(--line); padding: 10px 0; }
+  .pos:first-of-type { border-top: 0; }
+  .actions { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+  .copy { display: flex; gap: 8px; align-items: center; background: var(--bg); border: 1px solid var(--line); border-radius: 10px; padding: 10px; margin: 6px 0; }
+  .copy code { flex: 1; word-break: break-all; font-size: 14px; }
+  .big { font-size: 26px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  ul.rules { margin: 6px 0 0; padding-left: 18px; } ul.rules li { margin: 3px 0; }
+  nav { position: fixed; left: 0; right: 0; bottom: 0; display: flex; background: var(--card);
+        border-top: 1px solid var(--line); padding-bottom: env(safe-area-inset-bottom); }
+  nav button { flex: 1; background: transparent; color: var(--muted); border-radius: 0; padding: 12px 0 14px; font-weight: 500; font-size: 13px; }
+  nav button.on { color: var(--accent); }
+  #toast { position: fixed; left: 16px; right: 16px; bottom: 80px; padding: 12px 14px; border-radius: 12px; background: #2a2e33; color: #fff;
+           font-size: 14px; display: none; z-index: 10; box-shadow: 0 6px 24px rgba(0,0,0,.35); }
+  #toast.bad { background: #5a1f22; } #toast.good { background: #183f2b; }
+  .hidden { display: none !important; }
 </style>
 </head>
 <body>
-  <h1>⚡ AlphaDuel</h1>
-  <div class="muted">21-day trading discipline challenge · paper trading at live MEXC prices · not financial advice</div>
-  <select id="challenge" aria-label="Challenge"></select>
-  <div id="me" class="card"></div>
-  <div class="card"><div class="muted" id="rules-title">Rules</div><ul class="rules muted" id="rules"></ul></div>
-  <div class="card">
-    <div class="muted" id="board-title">Leaderboard</div>
-    <table><thead><tr><th>#</th><th>Trader</th><th class="num">ROI</th><th class="num">Disc.</th><th class="num">DD</th></tr></thead>
-      <tbody id="board"></tbody></table>
+  <div class="row between">
+    <h1>⚡ AlphaDuel</h1>
+    <span id="subchip" class="chip muted">…</span>
   </div>
+  <div class="muted small">21-day trading discipline challenge · paper trading at live MEXC prices · not financial advice</div>
+
+  <section id="tab-trade"></section>
+  <section id="tab-board" class="hidden"></section>
+  <section id="tab-account" class="hidden"></section>
+
+  <div id="toast"></div>
+  <nav>
+    <button data-tab="trade" class="on">📈 Trade</button>
+    <button data-tab="board">🏆 Leaderboard</button>
+    <button data-tab="account">👤 Account</button>
+  </nav>
   <script src="/app.js"></script>
 </body>
 </html>

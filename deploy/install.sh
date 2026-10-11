@@ -94,7 +94,7 @@ RestartSec=10
 WantedBy=multi-user.target
 EOF
 
-for unit in "apex-tgbot:Telegram bot (AlphaDuel):tgbot" "apex-miniapp:Telegram Mini App API:webapp"; do
+for unit in "apex-tgbot:AlphaDuel Telegram bot + Mini App:tgbot"; do
   IFS=: read -r name desc module <<<"$unit"
   cat > /etc/systemd/system/$name.service <<EOF
 [Unit]
@@ -150,6 +150,6 @@ Mode is PAPER until you change TRADING_MODE in .env.
 
 Telegram (optional): put TELEGRAM_BOT_TOKEN, TRON_RECEIVE_ADDRESS and
   MINIAPP_URL=https://app.$HOST  in $ENV, then
-  sudo systemctl enable --now apex-tgbot apex-miniapp
+  sudo systemctl enable --now apex-tgbot
   and in @BotFather: /setmenubutton -> https://app.$HOST
 EOF
