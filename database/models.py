@@ -379,4 +379,19 @@ class AdminAction(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True, nullable=False)
 
 
+class StarPayment(Base):
+    """A subscription paid in Telegram Stars (XTR). telegram_payment_charge_id is unique, so a payment update that
+    Telegram delivers twice extends the subscription only once; it is also what a refund needs."""
+
+    __tablename__ = "star_payments"
+    id: Mapped[int] = mapped_column(PK, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(PK, ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False)
+    telegram_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    stars: Mapped[int] = mapped_column(Integer, nullable=False)
+    days: Mapped[int] = mapped_column(Integer, nullable=False)
+    charge_id: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    refunded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 HYPERTABLES: tuple[str, ...] = (MarketTick.__tablename__, WhaleTransaction.__tablename__)

@@ -11,10 +11,11 @@ from sqlalchemy import func, or_, select
 from billing.service import UNITS, extend_subscription
 from competition import engine
 from database.connection import get_session
-from database.models import (AdminAction, Challenge, ChallengeParticipant, Invoice, InvoiceStatus, User)
+from billing import stars as stars_billing
+from database.models import (AdminAction, Challenge, ChallengeParticipant, Invoice, InvoiceStatus, StarPayment, User)
 from tgbot import service as svc
 from webapp import accounts
-from webapp.server import QUOTES, _bad, _body, _int, _iso, _quote, _throttle, current_user
+from webapp.server import QUOTES, REFUND, _bad, _body, _int, _iso, _quote, _throttle, current_user
 
 SYMBOL_RE = re.compile(r"^[A-Z0-9]{1,15}$")
 TX_RE = re.compile(r"^[0-9a-fA-F]{64}$")
@@ -62,6 +63,7 @@ async def stats(request: web.Request) -> web.Response:
         month = [i for i in paid if i.paid_at and engine._aware(i.paid_at) >= now - timedelta(days=30)]
         pending = (await s.execute(select(func.count()).select_from(Invoice)
                                    .where(Invoice.status == InvoiceStatus.PENDING))).scalar()
+        star_rows = (await s.execute(select(StarPayment).where(StarPayment.refunded_at.is_(None)))).scalars().all()
         chs = (await s.execute(select(Challenge))).scalars().all()
         parts = (await s.execute(select(ChallengeParticipant))).scalars().all()
         return web.json_response({
@@ -71,6 +73,8 @@ async def stats(request: web.Request) -> web.Response:
             "revenue_usdt": sum(i.amount_units for i in paid) / UNITS,
             "revenue_30d_usdt": sum(i.amount_units for i in month) / UNITS,
             "paid_invoices": len(paid), "pending_invoices": pending,
+            "stars_total": sum(p.stars for p in star_rows),
+            "stars_30d": sum(p.stars for p in star_rows if engine._aware(p.created_at) >= now - timedelta(days=30)),
             "live_challenges": sum(1 for c in chs if not c.finalized and engine._aware(c.end_time) > now),
             "participants": len(parts), "disqualified": sum(1 for p in parts if p.status == "DISQUALIFIED")})
 
@@ -171,6 +175,39 @@ async def invoice_mark_paid(request: web.Request) -> web.Response:
         return web.json_response({"ok": True})
 
 
+async def star_payments(request: web.Request) -> web.Response:
+    async with get_session() as s:
+        await _admin(request, s)
+        rows = (await s.execute(select(StarPayment, User).join(User, User.id == StarPayment.user_id)
+                                .order_by(StarPayment.created_at.desc()).limit(100))).all()
+        return web.json_response([{"id": p.id, "user": engine.public_name(u), "user_id": u.id, "stars": p.stars,
+                                   "days": p.days, "created": _iso(p.created_at), "refunded": _iso(p.refunded_at)}
+                                  for p, u in rows])
+
+
+async def star_refund(request: web.Request) -> web.Response:
+    """Refund through Telegram first; only when Telegram confirms are the days taken back."""
+    fn = request.app[REFUND]
+    if fn is None:
+        raise _bad("refunds need the bot process (python -m tgbot)", status=503)
+    async with svc.LOCK, get_session() as s:
+        admin = await _admin(request, s)
+        _throttle(request, f"admin{admin.id}")
+        p = await s.get(StarPayment, _int(request.match_info.get("pid"), "payment"))
+        if p is None:
+            raise _bad("no such payment", status=404)
+        if p.refunded_at is not None:
+            raise _bad("already refunded", status=409)
+        try:
+            await fn(p.telegram_id, p.charge_id)
+        except Exception as exc:
+            raise _bad(f"Telegram refused the refund: {exc}") from None
+        user = await s.get(User, p.user_id)
+        stars_billing.apply_refund(user, p)
+        _log(s, admin, "stars_refund", p.id, stars=p.stars, user=user.id)
+        return web.json_response({"ok": True})
+
+
 # ------------------------------------------------------------------------------------------------- challenges
 async def challenges(request: web.Request) -> web.Response:
     async with get_session() as s:
@@ -263,6 +300,8 @@ def add_routes(r: web.UrlDispatcher) -> None:
     r.add_post("/api/admin/users/{uid}/active", user_active)
     r.add_get("/api/admin/invoices", invoices)
     r.add_post("/api/admin/invoices/{iid}/mark_paid", invoice_mark_paid)
+    r.add_get("/api/admin/stars", star_payments)
+    r.add_post("/api/admin/stars/{pid}/refund", star_refund)
     r.add_get("/api/admin/challenges", challenges)
     r.add_post("/api/admin/challenges", challenge_create)
     r.add_post("/api/admin/challenges/{cid}", challenge_update)

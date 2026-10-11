@@ -144,6 +144,13 @@ plus fees. No customer exchange keys, and no deposits mid-contest to inflate ROI
   - It needs HTTPS. The VPS installer serves it at `https://app.<your-host>`. In @BotFather set the menu button to
     that URL.
   - `python -m webapp` runs the page alone in read-only mode (no trading), for testing.
+- **Telegram Stars** (`STARS_PRICE` in .env): inside Telegram the subscription is paid with Stars. Telegram
+  requires Stars for digital goods in bots and Mini Apps.
+  - Flow: `/subscribe` in the bot or "Pay ⭐" in the app → Telegram's own payment sheet → pre-checkout check
+    (payer, price, payload) → the subscription is extended once per charge id.
+  - The admin panel lists Stars payments and can refund through Telegram (the paid days are taken back).
+  - `/paysupport` and `/terms` are built in. Withdrawing Stars is done by the bot owner through Telegram/Fragment
+    under their rules and eligibility.
 - **Outside Telegram**, the same app works in any browser and can be installed to the home screen as a PWA.
   - E-mail and password sign-in: scrypt hashes, hashed bearer tokens, lock-out after 5 failed attempts.
   - In-app account deletion. `/privacy` and `/terms` are templates to complete.

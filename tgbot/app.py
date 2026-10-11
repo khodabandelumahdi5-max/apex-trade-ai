@@ -17,8 +17,10 @@ from sqlalchemy import func, select
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, WebAppInfo
 from telegram.constants import ParseMode
 from telegram.error import Forbidden, TelegramError
-from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes
+from telegram.ext import (Application, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler,
+                          PreCheckoutQueryHandler, filters)
 
+from billing import stars
 from billing.service import apply_transfers, expire_invoices
 from billing.tron import TronGridClient, is_tron_address
 from competition import engine
@@ -30,9 +32,10 @@ from tgbot import service as svc
 HELP = (
     "<b>AlphaDuel — 21-day trading discipline challenge</b>\n"
     "Paper trading with a virtual balance at live MEXC prices. No exchange keys, no deposits to an exchange.\n\n"
-    "/subscribe – USDT (TRC20) invoice\n/status – your subscription\n/challenges – live challenges\n"
+    "/subscribe – subscribe (Telegram Stars)\n/status – your subscription\n/challenges – live challenges\n"
     "/join ID\n/buy ID SYMBOL USD STOP  e.g. <code>/buy 1 SOL 500 140</code>\n"
     "/sell ID SYMBOL [QTY]\n/stop ID SYMBOL NEW_STOP  (raise only)\n/me ID – your stats\n/board ID – top 10\n\n"
+    "/terms – terms · /paysupport – payment help\n\n"
     "Not financial advice. Results in a paper challenge do not predict real trading results.")
 
 
@@ -52,7 +55,11 @@ class Bot:
             a.add_handler(CommandHandler(name, fn))
         for name in ("buy", "sell", "stop"):
             a.add_handler(CommandHandler(name, self.trade))
+        a.add_handler(CommandHandler("paysupport", self.paysupport))
+        a.add_handler(CommandHandler("terms", self.terms))
         a.add_handler(CallbackQueryHandler(self.button))
+        a.add_handler(PreCheckoutQueryHandler(self.precheckout))
+        a.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, self.paid))
         a.job_queue.run_repeating(self.payments_job, interval=60, first=10)
         a.job_queue.run_repeating(self.challenges_job, interval=60, first=20)
 
@@ -61,9 +68,13 @@ class Bot:
         if os.getenv("MINIAPP_PORT", "8080").strip() in {"", "0"}:
             return
         from webapp.server import build_app, start_site
-        self._web_runner = await start_site(build_app(self.token, self.quote))
+        self._web_runner = await start_site(build_app(self.token, self.quote, stars_link=self.stars_link,
+                                                      refund=self.refund))
         logger.info("Mini App server on http://{}:{}", os.getenv("MINIAPP_HOST", "127.0.0.1"),
                     os.getenv("MINIAPP_PORT", "8080"))
+
+    async def refund(self, telegram_id: int, charge_id: str) -> None:
+        await self.app.bot.refund_star_payment(user_id=telegram_id, telegram_payment_charge_id=charge_id)
 
     async def _stop_web(self, _: Application) -> None:
         if self._web_runner is not None:
@@ -118,8 +129,53 @@ class Bot:
 
     async def subscribe(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         async with svc.LOCK, get_session() as s:
-            text = await svc.invoice_text(s, await self._user(s, update))
-        await self._reply(update, text)
+            user = await self._user(s, update)
+            if stars.stars_price() > 0:                      # inside Telegram: Stars (Telegram's rule)
+                args = stars.invoice_args(user)
+            else:
+                text = await svc.invoice_text(s, user)
+                args = None
+        if args is not None:
+            await self.app.bot.send_invoice(update.effective_chat.id, **args)
+        else:
+            await self._reply(update, text)
+
+    async def stars_link(self, user_id: int) -> str:
+        """Invoice link for the Mini App (Telegram.WebApp.openInvoice)."""
+        async with get_session() as s:
+            user = await s.get(User, user_id)
+            args = stars.invoice_args(user)
+        return await self.app.bot.create_invoice_link(**args)
+
+    async def precheckout(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        q = update.pre_checkout_query
+        async with get_session() as s:
+            error = await stars.validate_checkout(s, q.invoice_payload, q.from_user.id, q.currency, q.total_amount)
+        await q.answer(ok=error is None, error_message=error)
+
+    async def paid(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        sp = update.effective_message.successful_payment
+        try:
+            async with svc.LOCK, get_session() as s:
+                user, new = await stars.record_payment(s, sp.invoice_payload, update.effective_user.id, sp.currency,
+                                                       sp.total_amount, sp.telegram_payment_charge_id)
+                text = f"✅ Payment received — thank you!\n{svc.subscription_text(user)}" if new else None
+        except Exception as exc:                 # never lose a paid update silently
+            logger.error("could not record Stars payment {}: {}", sp.telegram_payment_charge_id, exc)
+            text = "⚠️ Payment received but not applied automatically. Support has the details: /paysupport"
+        if text:
+            await self._reply(update, text)
+
+    async def paysupport(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        contact = os.getenv("SUPPORT_CONTACT", "").strip() or "the bot owner"
+        await self._reply(update, "💬 <b>Payment support</b>\nProblems with a payment or a refund request? "
+                                  f"Contact {svc.e(contact)} with the date and amount. Refunds of Stars payments "
+                                  "are made through Telegram.")
+
+    async def terms(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        base = os.getenv("MINIAPP_URL", "").strip().rstrip("/")
+        await self._reply(update, f"Terms: {svc.e(base + '/terms') if base else 'see the app'}\n"
+                                  f"Privacy: {svc.e(base + '/privacy') if base else 'see the app'}")
 
     async def status(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         async with svc.LOCK, get_session() as s:

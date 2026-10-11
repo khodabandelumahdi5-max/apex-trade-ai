@@ -300,7 +300,10 @@ function renderAccount() {
   root.append(el("div", { class: "card" }, el("h2", { text: s.name }),
     el("div", { class: s.subscribed ? "good" : "warn", text: s.subscribed ? `Subscription active until ${new Date(s.expires).toLocaleString()}` : "No active subscription" })));
   const pay = el("div", { class: "card" }, el("h2", { text: s.subscribed ? "Extend subscription" : "Subscribe" }));
-  if (!s.payments) pay.append(el("div", { class: "muted", text: "Payments are not open yet." }));
+  if (s.stars > 0) {                     // inside Telegram: pay with Telegram Stars
+    pay.append(el("div", { class: "muted", style: "margin-bottom:10px", text: `${s.days} days of access. Paid securely through Telegram. Paying early adds to your remaining time.` }),
+      el("button", { class: "wide", text: `Pay ⭐ ${s.stars} Stars`, onclick: payStars }));
+  } else if (!s.payments) pay.append(el("div", { class: "muted", text: "Payments are not open yet." }));
   else if (!S.invoice) pay.append(el("div", { class: "muted", style: "margin-bottom:10px", text: "Pay with USDT on the TRON (TRC20) network. Paying early adds to your remaining time." }),
     el("button", { class: "wide", text: "Get payment details", onclick: getInvoice }));
   else {
@@ -338,6 +341,22 @@ async function deleteAccount() {
     toast("Your account was deleted.", "good");
     if (inTelegram) { await loadSession(); await refresh(); } else showAuth();
   } catch (e) { toast(e.message, "bad"); }
+}
+async function payStars() {
+  let link;
+  try { link = (await api("/api/stars_invoice", {})).link; } catch (e) { toast(e.message, "bad"); return; }
+  const was = S.session.expires;
+  tg.openInvoice(link, async (status) => {
+    if (status === "paid") {
+      toast("Payment received — activating…", "good");
+      for (let i = 0; i < 10; i++) {                 // the bot records the payment a moment later
+        await new Promise((r) => setTimeout(r, 1500));
+        await loadSession();
+        if (S.session && S.session.expires !== was) break;
+      }
+      renderAccount();
+    } else if (status === "failed") toast("Payment failed. Nothing was charged.", "bad");
+  });
 }
 async function getInvoice() {
   try { S.invoice = await api("/api/invoice", {}); } catch (e) { toast(e.message, "bad"); }

@@ -37,6 +37,7 @@ from competition.engine import ChallengeError, Quote, RuleViolation
 from database.connection import get_session
 from database.models import Challenge, ChallengeEquityPoint, User
 from tgbot import service as svc
+from billing import stars
 from webapp import accounts
 from webapp.auth import InitDataError, verify_init_data
 
@@ -44,6 +45,8 @@ STATIC = Path(__file__).parent / "static"
 BOT_TOKEN = web.AppKey("bot_token", str)
 QUOTES = web.AppKey("quotes", object)          # async (symbol) -> Quote, or None in read-only mode
 THROTTLE = web.AppKey("throttle", dict)
+STARS_LINK = web.AppKey("stars_link", object)  # async (user_id) -> invoice link, or None (no bot)
+REFUND = web.AppKey("refund", object)          # async (telegram_id, charge_id) -> None, or None (no bot)
 QuoteFn = Callable[[str], Awaitable[Quote]]
 
 
@@ -232,7 +235,10 @@ async def session(request: web.Request) -> web.Response:
                                   "expires": _iso(user.subscription_expires_at), "admin": accounts.is_admin(user),
                                   "via": "telegram" if user.telegram_id else "email",
                                   "email": None if user.telegram_id else user.email,
-                                  "payments": bool(os.getenv("TRON_RECEIVE_ADDRESS", "").strip())})
+                                  "payments": bool(os.getenv("TRON_RECEIVE_ADDRESS", "").strip()),
+                                  # inside Telegram, digital goods are paid with Stars (Telegram's rule)
+                                  "stars": (stars.stars_price() if user.telegram_id and request.app[STARS_LINK] else 0),
+                                  "days": stars.period_days()})
 
 
 async def me(request: web.Request) -> web.Response:
@@ -269,6 +275,22 @@ async def invoice(request: web.Request) -> web.Response:
             raise _bad("payments are not configured yet", status=503)
         return web.json_response({"amount": inv.amount_usdt, "address": inv.address, "network": "TRON (TRC20)",
                                   "token": "USDT", "days": inv.days, "expires": _iso(inv.expires_at)})
+
+
+async def stars_invoice(request: web.Request) -> web.Response:
+    fn = request.app[STARS_LINK]
+    if fn is None or stars.stars_price() <= 0:
+        raise _bad("Stars payments are not enabled", status=503)
+    async with svc.LOCK, get_session() as s:
+        user = await current_user(request, s)
+        if user.telegram_id is None:
+            raise _bad("Stars payments are available inside Telegram")
+        _throttle(request, _ukey(user))
+        uid = user.id
+    try:
+        return web.json_response({"link": await fn(uid)})
+    except Exception:
+        raise _bad("Telegram is unavailable right now, try again", status=503) from None
 
 
 async def join(request: web.Request) -> web.Response:
@@ -400,11 +422,13 @@ async def stop(request: web.Request) -> web.Response:
     return await _trade(request, "stop")
 
 
-def build_app(bot_token: str, quotes_fn: QuoteFn | None = None) -> web.Application:
+def build_app(bot_token: str, quotes_fn: QuoteFn | None = None, stars_link=None, refund=None) -> web.Application:
     app = web.Application(middlewares=[security_headers], client_max_size=16 * 1024)
     app[BOT_TOKEN] = bot_token
     app[QUOTES] = quotes_fn
     app[THROTTLE] = {}
+    app[STARS_LINK] = stars_link
+    app[REFUND] = refund
     r = app.router
     r.add_get("/", index)
     for name, ctype in {"app.js": None, "admin.js": None, "sw.js": "application/javascript", "manifest.webmanifest":
@@ -423,6 +447,7 @@ def build_app(bot_token: str, quotes_fn: QuoteFn | None = None) -> web.Applicati
     r.add_get("/api/session", session)
     r.add_get("/api/me", me)
     r.add_post("/api/invoice", invoice)
+    r.add_post("/api/stars_invoice", stars_invoice)
     r.add_post("/api/join", join)
     r.add_post("/api/max_buy", max_buy)
     r.add_post("/api/order", order)

@@ -1,6 +1,6 @@
 // Admin panel (tab visible only when /api/session says admin; every endpoint re-checks on the server).
 "use strict";
-const A = { view: "overview", q: "", invStatus: "PENDING" };
+const A = { view: "overview", q: "", invStatus: "STARS" };
 
 function adminSeg() {
   const views = [["overview", "Overview"], ["challenges", "Challenges"], ["users", "Users"], ["payments", "Payments"], ["log", "Log"]];
@@ -27,6 +27,7 @@ async function adminOverview(box) {
   box.append(el("div", { class: "card" }, el("h2", { text: "Overview" }), el("div", { class: "kpis" },
     kpi("users", String(k.users)), kpi("active subscriptions", String(k.active_subscriptions), "good"),
     kpi("revenue (30 days)", k.revenue_30d_usdt.toFixed(2) + " USDT"), kpi("revenue (total)", k.revenue_usdt.toFixed(2) + " USDT"),
+    kpi("Stars (30 days)", "⭐ " + k.stars_30d), kpi("Stars (total)", "⭐ " + k.stars_total),
     kpi("pending invoices", String(k.pending_invoices), k.pending_invoices ? "warn" : ""), kpi("live challenges", String(k.live_challenges)),
     kpi("participants", String(k.participants)), kpi("disqualified", String(k.disqualified))),
     el("div", { class: "muted small", style: "margin-top:10px", text: `Telegram users ${k.telegram_users} · e-mail users ${k.email_users} · paid invoices ${k.paid_invoices}` })));
@@ -88,7 +89,8 @@ async function adminUsers(box) {
 }
 
 async function adminPayments(box) {
-  const seg = el("div", { class: "seg" }, ["PENDING", "PAID", "EXPIRED", "ALL"].map((st) => el("button", { class: A.invStatus === st ? "on" : "", text: st.toLowerCase(),
+  if (A.invStatus === "STARS") return adminStars(box);
+  const seg = el("div", { class: "seg" }, ["STARS", "PENDING", "PAID", "EXPIRED", "ALL"].map((st) => el("button", { class: A.invStatus === st ? "on" : "", text: st.toLowerCase(),
     onclick: () => { A.invStatus = st; renderAdmin(); } })));
   const list = el("div", { class: "card" }, seg, el("div", { class: "muted small", style: "margin-bottom:6px", text: "Paid automatically when the exact amount arrives. For a wrong-amount or late payment, check it on Tronscan and attach the transaction hash." }));
   const rows = await api("/api/admin/invoices" + (A.invStatus === "ALL" ? "" : "?status=" + A.invStatus));
@@ -104,6 +106,21 @@ async function adminPayments(box) {
           if (!(await confirmBox(`Mark invoice #${i.id} paid and add ${i.days} days to ${i.user}?`))) return;
           try { await api(`/api/admin/invoices/${i.id}/mark_paid`, { tx: tx.value }); toast("Marked as paid", "good"); renderAdmin(); } catch (e) { toast(e.message, "bad"); } } })))));
   });
+  box.append(list);
+}
+
+async function adminStars(box) {
+  const seg = el("div", { class: "seg" }, ["STARS", "PENDING", "PAID", "EXPIRED", "ALL"].map((st) => el("button", { class: A.invStatus === st ? "on" : "", text: st.toLowerCase(),
+    onclick: () => { A.invStatus = st; renderAdmin(); } })));
+  const list = el("div", { class: "card" }, seg, el("div", { class: "muted small", style: "margin-bottom:6px", text: "Telegram Stars payments. A refund returns the Stars through Telegram and takes the paid days back." }));
+  const rows = await api("/api/admin/stars");
+  if (!rows.length) list.append(el("div", { class: "muted", text: "No Stars payments yet." }));
+  rows.forEach((p) => list.append(el("div", { class: "list-item" },
+    el("div", { class: "row between" }, el("b", { text: `⭐ ${p.stars} · ${p.user}` }), el("span", { class: "chip " + (p.refunded ? "muted" : "good"), text: p.refunded ? "refunded" : "paid" })),
+    el("div", { class: "muted small", text: `#${p.id} · ${p.days} days · ${when(p.created)}${p.refunded ? " · refunded " + when(p.refunded) : ""}` }),
+    p.refunded ? null : el("button", { class: "ghost sm", style: "margin-top:6px", text: "Refund", onclick: async () => {
+      if (!(await confirmBox(`Refund ⭐ ${p.stars} to ${p.user} and remove ${p.days} days?`))) return;
+      try { await api(`/api/admin/stars/${p.id}/refund`, {}); toast("Refunded", "good"); renderAdmin(); } catch (e) { toast(e.message, "bad"); } } }))));
   box.append(list);
 }
 
