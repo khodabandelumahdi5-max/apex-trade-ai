@@ -109,6 +109,10 @@ class Settings(BaseModel):
     max_slippage_bps: int = Field(50, ge=1, le=1000)
     max_price_impact_pct: float = Field(1.0, gt=0)
     paper_fee_bps: float = Field(10.0, ge=0)
+    # also used by the risk agent: position size is chosen so that loss at the stop *including* round-trip fees
+    # equals the risk budget
+    min_stop_distance_pct: float = Field(0.05, ge=0)   # stops closer than this are rejected (noise / bad data)
+    max_24h_move_pct: float = Field(15.0, ge=0)        # no new entry after a bigger 24h move (0 = off)
     max_consecutive_failures: int = Field(5, ge=1)
 
     @field_validator("cex_exchange")

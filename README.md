@@ -94,7 +94,23 @@ pytest -q                     # unit tests
 - Keys that declare withdrawal permission are refused. MEXC cannot report a key's permissions, so create
   trade-only keys with an IP whitelist.
 
+## USDT subscriptions (billing/)
+
+`python -m billing adduser EMAIL` · `invoice EMAIL [DAYS]` · `check` · `status EMAIL` (settings in `.env.example`).
+- Only the official USDT TRC20 contract (`TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t`) counts. A fake token named "USDT"
+  is ignored. Only confirmed (solidified) transfers to your address are read.
+- TRC20 has no memo field, so each invoice gets a unique amount (price + 0.01 … 0.99). The customer must send
+  exactly that amount. An amount stays reserved for 3 days, so a late payment cannot pay someone else's invoice.
+- Each transaction id can pay one invoice only, once. Paying early adds to the remaining time.
+- Unmatched payments (wrong amount, after expiry) are logged for manual handling.
+- An expired subscription pauses trading (`subscription_allows_trading`). It does not disable the account.
+- Not built on purpose: running bots on customers' exchange accounts. See "Things to know".
+
 ## Things to know before trusting it
+
+- Selling access to a strategy, or trading other people's accounts, is regulated as investment advice or
+  portfolio management in most countries. Tether can freeze USDT on any address. Check your own legal
+  situation before taking payments.
 
 - **No strategy is loss-free.** "Zero-Loss" moves the stop to entry after +1.5 %; gaps, slippage and fees can
   still produce a loss (set `BREAKEVEN_BUFFER_PCT` to cover fees). Before breakeven, each trade risks up to 1 %.

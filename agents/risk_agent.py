@@ -83,6 +83,11 @@ def portfolio_var(exposures_usd: dict[str, float], hourly_returns: dict[str, pd.
     return max(parametric, historical, 0.0)
 
 
+def loss_per_unit(entry: float, stop: float, fee_rate: float) -> float:
+    """Loss per unit if the stop is hit: price distance plus the fee paid on entry and on the stop exit."""
+    return (entry - stop) + fee_rate * (entry + stop)
+
+
 def take_profit_price(entry: float, stop: float, r_multiple: float) -> float | None:
     """Target at `r_multiple` × the initial risk above entry; None when disabled."""
     if r_multiple <= 0 or stop >= entry:
@@ -147,7 +152,7 @@ class RiskAgent(BaseAgent[RiskState]):
     async def process(self, *, symbol: str, entry_price: float, technical: TechnicalState,  # type: ignore[override]
                       portfolio: GlobalPortfolioState, closed: Sequence[Trade],
                       hourly_returns: dict[str, pd.Series], risk_pct: float, kelly_fraction: float,
-                      daily_start_equity: float) -> RiskState:
+                      daily_start_equity: float, price_change_24h_pct: float | None = None) -> RiskState:
         s = self.settings
         reasons: list[str] = []
         edge = estimate_edge(closed)
@@ -177,8 +182,13 @@ class RiskAgent(BaseAgent[RiskState]):
             return reject("no statistical edge (Kelly ≤ 0)")
         if stop >= entry_price:
             return reject("stop must be below entry")
+        if (entry_price - stop) / entry_price * 100 < s.min_stop_distance_pct:
+            return reject(f"stop closer than {s.min_stop_distance_pct}% to entry")
+        if s.max_24h_move_pct > 0 and price_change_24h_pct is not None \
+                and abs(price_change_24h_pct) > s.max_24h_move_pct:
+            return reject(f"24h move {price_change_24h_pct:+.1f}% exceeds ±{s.max_24h_move_pct}% (volatility shock)")
 
-        risk_per_unit = entry_price - stop
+        risk_per_unit = loss_per_unit(entry_price, stop, s.paper_fee_bps / 10_000)
         size = equity * eff_risk / 100 / risk_per_unit
         caps = {"max_position_pct": equity * s.max_position_pct / 100 / entry_price,
                 "available_cash": max(0.0, portfolio.cash * 0.98) / entry_price}

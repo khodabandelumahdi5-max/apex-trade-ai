@@ -197,7 +197,7 @@ class ExchangeAPIKey(Base):
 
     __tablename__ = "exchange_api_keys"
     id: Mapped[int] = mapped_column(PK, primary_key=True, autoincrement=True)
-    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False)
+    user_id: Mapped[int] = mapped_column(PK, ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False)
     exchange_name: Mapped[str] = mapped_column(String(32), nullable=False)
     api_key: Mapped[str] = mapped_column("api_key", EncryptedString(), nullable=False)
     api_secret: Mapped[str] = mapped_column("api_secret", EncryptedString(), nullable=False)
@@ -223,6 +223,34 @@ class ExchangeAPIKey(Base):
 
     def __repr__(self) -> str:   # never print secrets
         return f"<ExchangeAPIKey id={self.id} user={self.user_id} exchange={self.exchange_name} valid={self.is_valid}>"
+
+
+class InvoiceStatus(str, enum.Enum):
+    PENDING = "PENDING"
+    PAID = "PAID"
+    EXPIRED = "EXPIRED"
+
+
+class Invoice(Base):
+    """A USDT (TRC20) subscription invoice. TRC20 transfers carry no memo, so each open invoice gets a unique amount
+    (price + a few cents) and a payment is matched by exact amount, time window and a never-seen transaction id."""
+
+    __tablename__ = "invoices"
+    id: Mapped[int] = mapped_column(PK, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(PK, ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False)
+    amount_units: Mapped[int] = mapped_column(BigInteger, nullable=False)   # USDT × 10^6, exact
+    address: Mapped[str] = mapped_column(String(64), nullable=False)
+    days: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[InvoiceStatus] = mapped_column(Enum(InvoiceStatus, native_enum=False, length=16),
+                                                  default=InvoiceStatus.PENDING, index=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    tx_id: Mapped[str | None] = mapped_column(String(80), unique=True, nullable=True)   # replay protection
+    paid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    @property
+    def amount_usdt(self) -> str:
+        return f"{self.amount_units // 1_000_000}.{self.amount_units % 1_000_000:06d}".rstrip("0").rstrip(".")
 
 
 HYPERTABLES: tuple[str, ...] = (MarketTick.__tablename__, WhaleTransaction.__tablename__)

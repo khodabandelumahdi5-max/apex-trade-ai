@@ -144,3 +144,29 @@ def test_targets_can_be_disabled():
     p = pos(entry=100, stop=98).model_copy(update={"initial_stop": 98.0})
     upd = manage_position(p, 150.0, s)
     assert not upd.exit and upd.partial_fraction == 0
+
+
+@pytest.mark.asyncio
+async def test_size_includes_round_trip_fees(monkeypatch):
+    agent = RiskAgent(settings(max_portfolio_var_pct=50, paper_fee_bps=10))
+    monkeypatch.setattr(agent, "_beat", _noop)
+    r = await agent.run(symbol="SOL", entry_price=100.0, technical=_tech(98.0), portfolio=_portfolio(), closed=[],
+                        hourly_returns=_returns(), risk_pct=2.0, kelly_fraction=1.0, daily_start_equity=10_000)
+    assert r.approved
+    loss_at_stop = r.position_size * ((100.0 - 98.0) + 0.001 * (100.0 + 98.0))
+    assert loss_at_stop == pytest.approx(r.max_risk_usd)
+    assert loss_at_stop <= 10_000 * r.effective_risk_pct / 100 + 1e-6
+
+
+@pytest.mark.asyncio
+async def test_rejects_too_tight_stop_and_volatility_shock(monkeypatch):
+    agent = RiskAgent(settings(max_portfolio_var_pct=50))
+    monkeypatch.setattr(agent, "_beat", _noop)
+    common = dict(symbol="SOL", entry_price=100.0, portfolio=_portfolio(), closed=[], hourly_returns=_returns(),
+                  risk_pct=1.0, kelly_fraction=0.25, daily_start_equity=10_000)
+    r = await agent.run(technical=_tech(99.97), **common)
+    assert not r.approved and "closer than" in r.reasons[-1]
+    r = await agent.run(technical=_tech(97.0), price_change_24h_pct=-22.0, **common)
+    assert not r.approved and "volatility shock" in r.reasons[-1]
+    r = await agent.run(technical=_tech(97.0), price_change_24h_pct=9.0, **common)
+    assert r.approved

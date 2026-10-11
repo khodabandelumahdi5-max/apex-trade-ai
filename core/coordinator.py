@@ -319,7 +319,8 @@ class SwarmCoordinator:
             risk = await self.risk.run(symbol=token.symbol, entry_price=market.price, technical=tech, portfolio=pf,
                                        closed=await repo.closed_trades(), hourly_returns=await self._hourly_returns(),
                                        risk_pct=risk_pct, kelly_fraction=kelly_fraction,
-                                       daily_start_equity=await self._daily_start_equity(pf.total_capital))
+                                       daily_start_equity=await self._daily_start_equity(pf.total_capital),
+                                       price_change_24h_pct=market.price_change_24h_pct)
         except AgentError as exc:
             logger.error("risk agent failed for {}: {}", token.symbol, exc)
             return

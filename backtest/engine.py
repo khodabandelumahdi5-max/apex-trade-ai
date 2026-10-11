@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 import numpy as np
 import pandas as pd
 
-from agents.risk_agent import HARD_MAX_RISK_PCT, estimate_edge, manage_position
+from agents.risk_agent import HARD_MAX_RISK_PCT, estimate_edge, loss_per_unit, manage_position
 from agents.technical_agent import analyse_frame, confidence_score
 from backtest.data import load, load_mexc
 from config import Settings, WatchToken
@@ -46,6 +46,7 @@ class BTConfig:
     tp1_r: float = 0.0        # 0 = off (the original strategy)
     tp1_fraction: float = 0.5
     tp2_r: float = 0.0
+    max_24h_move_pct: float = 15.0   # 0 = off; same filter as the live risk agent
 
 
 @dataclass
@@ -136,7 +137,7 @@ def run_backtest(symbol: str, h1: pd.DataFrame, cfg: BTConfig) -> BTResult:
             edge = estimate_edge([Trade(pnl=t.pnl) for t in closed])
             eff_risk = min(cfg.risk_pct, HARD_MAX_RISK_PCT, cfg.kelly_fraction * edge.kelly * 100)
             if eff_risk > 0 and stop > 0:
-                size = equity_now * eff_risk / 100 / stop_dist
+                size = equity_now * eff_risk / 100 / loss_per_unit(fill, stop, fee)
                 size = min(size, equity_now * cfg.max_position_pct / 100 / fill, cash * 0.98 / fill)
                 if size * fill >= 10:
                     cost = size * fill
@@ -174,7 +175,9 @@ def run_backtest(symbol: str, h1: pd.DataFrame, cfg: BTConfig) -> BTResult:
 
         # 3) signal on this bar's close
         sig, conf, atr = _signals(h1, i, cfg)
-        if pos is None and sig == "BUY":
+        move_24h = (c / h1.close.iloc[i - 24] - 1) * 100
+        shock = cfg.max_24h_move_pct > 0 and abs(move_24h) > cfg.max_24h_move_pct
+        if pos is None and sig == "BUY" and not shock:
             pending_buy = (max(cfg.atr_mult * atr, c * 0.005), conf)
         elif pos is not None and sig == "SELL" and cfg.technical_exit:
             pending_sell = True
