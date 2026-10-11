@@ -82,6 +82,18 @@ python signals.py             # current trade plan: signal, entry, stop, TP1, TP
 pytest -q                     # unit tests
 ```
 
+## Accounts and encrypted API keys (groundwork for multi-user)
+
+`database/models.py` has `User` and `ExchangeAPIKey` tables. They are not used by the single-user bot yet.
+- API key and secret are encrypted with Fernet (`database/secure.py`) using `DB_ENCRYPTION_KEY` from `.env`.
+  There is no random-key fallback: a missing key is an error, because a new random key on each start would make
+  every stored secret unreadable.
+- Generate a key with `python -m database.secure genkey`. Rotate it with `python -m database.secure rotate`
+  (new key first in the comma-separated list).
+- Passwords are hashed with scrypt (`hash_password` / `verify_password`), never stored in plain text.
+- Keys that declare withdrawal permission are refused. MEXC cannot report a key's permissions, so create
+  trade-only keys with an IP whitelist.
+
 ## Things to know before trusting it
 
 - **No strategy is loss-free.** "Zero-Loss" moves the stop to entry after +1.5 %; gaps, slippage and fees can

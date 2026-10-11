@@ -12,3 +12,4 @@ python-dotenv==1.0.1
 scipy==1.13.0
 loguru==0.7.2
 solders==0.21.0
+cryptography==43.0.3
