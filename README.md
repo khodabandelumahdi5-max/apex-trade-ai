@@ -128,7 +128,9 @@ plus fees. No customer exchange keys, and no deposits mid-contest to inflate ROI
   entry-fee prize pool: paid entry plus a prize pool counts as gambling in many countries.
 
 **Run:**
-- `python -m tgbot` starts the Telegram bot (long polling).
+- On Windows, double-click `bot.bat`. Elsewhere, run `python -m tgbot` (long polling). Either starts the Telegram
+  bot (@alphaduellivebot; `BOT_USERNAME` makes it refuse any other bot's token).
+  - At start-up it sets the bot's command menu, description and Mini App button by itself.
   - Commands: /subscribe, /status, /challenges, /join, /buy ID SYMBOL USD STOP, /sell, /stop, /me, /board.
   - Every minute it matches USDT payments and ticks every live challenge (stops, rules, ranking).
   - It sends stop-hit, near-stop, pause and disqualification messages.

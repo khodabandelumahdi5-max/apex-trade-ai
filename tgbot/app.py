@@ -64,7 +64,9 @@ class Bot:
         a.job_queue.run_repeating(self.challenges_job, interval=60, first=20)
 
     # ------------------------------------------------------------------ Mini App server (same process)
-    async def _start_web(self, _: Application) -> None:
+    async def _start_web(self, app: Application) -> None:
+        from tgbot.setup import configure
+        await configure(app.bot)                  # commands, description, menu button; refuses a wrong token
         if os.getenv("MINIAPP_PORT", "8080").strip() in {"", "0"}:
             return
         from webapp.server import build_app, start_site
