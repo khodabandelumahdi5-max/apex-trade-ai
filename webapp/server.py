@@ -4,8 +4,9 @@ Runs INSIDE the Telegram bot process (`python -m tgbot` starts it), so the app, 
 background jobs share one write lock and one price cache: no lost updates between processes, one MEXC client.
 `python -m webapp` starts it alone in read-only mode (no trading endpoints), e.g. for testing the page.
 
-Every /api call except the public ones needs the header X-Telegram-Init-Data (signed by Telegram, see auth.py).
-Auth is a header, not a cookie, so cross-site requests (CSRF) can't act for a user.
+Every /api call except the public ones needs either the header X-Telegram-Init-Data (signed by Telegram, see
+auth.py) or "Authorization: Bearer <token>" from /api/auth/login (app outside Telegram). Auth is a header, never a
+cookie, so cross-site requests (CSRF) can't act for a user.
 
 GET  /api/challenges                    public  challenge list with rules
 GET  /api/challenges/{id}/leaderboard   public  ranked traders (public names only)
@@ -36,6 +37,7 @@ from competition.engine import ChallengeError, Quote, RuleViolation
 from database.connection import get_session
 from database.models import Challenge, ChallengeEquityPoint, User
 from tgbot import service as svc
+from webapp import accounts
 from webapp.auth import InitDataError, verify_init_data
 
 STATIC = Path(__file__).parent / "static"
@@ -52,8 +54,8 @@ def _iso(dt: datetime | None) -> str | None:
 
 
 def _bad(msg: str, *, rule: bool = False, status: int = 400) -> web.HTTPException:
-    cls = {400: web.HTTPBadRequest, 401: web.HTTPUnauthorized, 404: web.HTTPNotFound, 429: web.HTTPTooManyRequests,
-           503: web.HTTPServiceUnavailable}[status]
+    cls = {400: web.HTTPBadRequest, 401: web.HTTPUnauthorized, 403: web.HTTPForbidden, 404: web.HTTPNotFound,
+           409: web.HTTPConflict, 429: web.HTTPTooManyRequests, 503: web.HTTPServiceUnavailable}[status]
     return cls(text=web.json_response({"error": msg, "rule": rule}).text, content_type="application/json")
 
 
@@ -84,26 +86,55 @@ async def security_headers(request: web.Request, handler):
     resp.headers.setdefault("Referrer-Policy", "no-referrer")
     resp.headers.setdefault("Content-Security-Policy",
                             "default-src 'self'; script-src 'self' https://telegram.org; style-src 'self' "
-                            "'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors "
+                            "'unsafe-inline'; img-src 'self' data:; connect-src 'self'; manifest-src 'self'; worker-src 'self'; "
+                            "frame-ancestors "
                             "https://web.telegram.org https://*.telegram.org")
     if request.path.startswith("/api/"):
         resp.headers["Cache-Control"] = "no-store"
     return resp
 
 
-def _tg_user(request: web.Request) -> dict:
-    try:
-        return verify_init_data(request.headers.get("X-Telegram-Init-Data", ""), request.app[BOT_TOKEN])
-    except InitDataError as exc:
-        raise _bad(str(exc), status=401) from None
+def _bearer(request: web.Request) -> str:
+    h = request.headers.get("Authorization", "")
+    return h[7:].strip() if h.lower().startswith("bearer ") else ""
 
 
-def _throttle(request: web.Request, tg_id: int) -> None:
+async def current_user(request: web.Request, s, *, create: bool = True) -> User | None:
+    """The signed-in user (Telegram initData or bearer token). Raises 401 when neither is valid.
+    create=False: a Telegram user who never opened the app yet → None instead of a new row."""
+    init = request.headers.get("X-Telegram-Init-Data", "")
+    if init:
+        try:
+            tg = verify_init_data(init, request.app[BOT_TOKEN])
+        except InitDataError as exc:
+            raise _bad(str(exc), status=401) from None
+        if create:
+            user = await svc.get_or_create_user(s, tg["id"], tg.get("first_name"))
+        else:
+            user = (await s.execute(select(User).where(User.telegram_id == tg["id"]))).scalar()
+        if user is not None and not user.is_active:
+            raise _bad("this account is disabled", status=403)
+        return user
+    token = _bearer(request)
+    if token:
+        user = await accounts.user_for_token(s, token)
+        if user is None:
+            raise _bad("session expired, please sign in again", status=401)
+        return user
+    raise _bad("sign in required", status=401)
+
+
+def _ukey(user: User) -> str:
+    # Telegram id is stable even before the new user row is committed (a rolled-back row's id can be reused)
+    return f"tg{user.telegram_id}" if user.telegram_id else f"u{user.id}"
+
+
+def _throttle(request: web.Request, key: int | str) -> None:
     last = request.app[THROTTLE]
     now = time.monotonic()
-    if now - last.get(tg_id, 0.0) < 0.5:                        # 2 writes / second / user
+    if now - last.get(key, 0.0) < 0.5:                          # 2 writes / second / user
         raise _bad("too many requests, slow down", status=429)
-    last[tg_id] = now
+    last[key] = now
 
 
 async def _body(request: web.Request) -> dict:
@@ -144,8 +175,14 @@ async def index(_: web.Request) -> web.FileResponse:
     return web.FileResponse(STATIC / "index.html")
 
 
-async def app_js(_: web.Request) -> web.FileResponse:
-    return web.FileResponse(STATIC / "app.js")
+def _static(name: str, content_type: str | None = None, cache: str = "no-cache"):
+    async def handler(_: web.Request) -> web.FileResponse:
+        resp = web.FileResponse(STATIC / name)
+        if content_type:
+            resp.content_type = content_type
+        resp.headers["Cache-Control"] = cache
+        return resp
+    return handler
 
 
 async def challenges(_: web.Request) -> web.Response:
@@ -189,18 +226,18 @@ async def quotes(request: web.Request) -> web.Response:
 
 # ---------------------------------------------------------------------------------------------- user
 async def session(request: web.Request) -> web.Response:
-    tg = _tg_user(request)
     async with svc.LOCK, get_session() as s:
-        user = await svc.get_or_create_user(s, tg["id"], tg.get("first_name"))
+        user = await current_user(request, s)
         return web.json_response({"name": engine.public_name(user), "subscribed": user.subscription_active,
-                                  "expires": _iso(user.subscription_expires_at),
+                                  "expires": _iso(user.subscription_expires_at), "admin": accounts.is_admin(user),
+                                  "via": "telegram" if user.telegram_id else "email",
+                                  "email": None if user.telegram_id else user.email,
                                   "payments": bool(os.getenv("TRON_RECEIVE_ADDRESS", "").strip())})
 
 
 async def me(request: web.Request) -> web.Response:
-    tg = _tg_user(request)
     async with get_session() as s:
-        user = (await s.execute(select(User).where(User.telegram_id == tg["id"]))).scalar()
+        user = await current_user(request, s, create=False)
         ch = await _challenge(s, request.query.get("challenge"))
         if user is None:
             return web.json_response({"joined": False, "subscribed": False})
@@ -224,10 +261,9 @@ async def me(request: web.Request) -> web.Response:
 
 
 async def invoice(request: web.Request) -> web.Response:
-    tg = _tg_user(request)
-    _throttle(request, tg["id"])
     async with svc.LOCK, get_session() as s:
-        user = await svc.get_or_create_user(s, tg["id"], tg.get("first_name"))
+        user = await current_user(request, s)
+        _throttle(request, _ukey(user))
         inv = await svc.open_invoice(s, user)
         if inv is None:
             raise _bad("payments are not configured yet", status=503)
@@ -236,11 +272,10 @@ async def invoice(request: web.Request) -> web.Response:
 
 
 async def join(request: web.Request) -> web.Response:
-    tg = _tg_user(request)
-    _throttle(request, tg["id"])
     body = await _body(request)
     async with svc.LOCK, get_session() as s:
-        user = await svc.get_or_create_user(s, tg["id"], tg.get("first_name"))
+        user = await current_user(request, s)
+        _throttle(request, _ukey(user))
         ch = await _challenge(s, body.get("challenge"))
         try:
             p = await engine.join(s, ch, user)
@@ -250,11 +285,10 @@ async def join(request: web.Request) -> web.Response:
 
 
 async def max_buy(request: web.Request) -> web.Response:
-    tg = _tg_user(request)
     body = await _body(request)
     fn = _quotes(request)
     async with get_session() as s:
-        user = (await s.execute(select(User).where(User.telegram_id == tg["id"]))).scalar()
+        user = await current_user(request, s, create=False)
         ch = await _challenge(s, body.get("challenge"))
         if user is None:
             raise _bad("join the challenge first")
@@ -271,12 +305,11 @@ async def max_buy(request: web.Request) -> web.Response:
 
 
 async def _trade(request: web.Request, action: str) -> web.Response:
-    tg = _tg_user(request)
-    _throttle(request, tg["id"])
     body = await _body(request)
     fn = _quotes(request)
     async with svc.LOCK, get_session() as s:
-        user = await svc.get_or_create_user(s, tg["id"], tg.get("first_name"))
+        user = await current_user(request, s)
+        _throttle(request, _ukey(user))
         ch = await _challenge(s, body.get("challenge"))
         symbol = str(body.get("symbol", "")).upper()
         if symbol not in ch.symbol_list:
@@ -310,6 +343,55 @@ async def _trade(request: web.Request, action: str) -> web.Response:
             return web.json_response({"error": str(exc), "rule": False}, status=400)
 
 
+# ---------------------------------------------------------------------------------------------- accounts
+async def auth_register(request: web.Request) -> web.Response:
+    body = await _body(request)
+    _throttle(request, "reg:" + (request.remote or "?"))
+    if body.get("accept_terms") is not True:
+        raise _bad("please accept the terms and privacy policy")
+    async with svc.LOCK, get_session() as s:
+        try:
+            user = await accounts.register(s, str(body.get("email", "")), str(body.get("password", "")))
+        except accounts.AuthError as exc:
+            raise _bad(str(exc)) from None
+        return web.json_response({"token": await accounts.issue_token(s, user)})
+
+
+async def auth_login(request: web.Request) -> web.Response:
+    body = await _body(request)
+    _throttle(request, "login:" + (request.remote or "?"))
+    async with svc.LOCK, get_session() as s:
+        try:
+            user = await accounts.login(s, str(body.get("email", "")), str(body.get("password", "")))
+        except accounts.AuthError as exc:
+            raise _bad(str(exc), status=401) from None
+        return web.json_response({"token": await accounts.issue_token(s, user)})
+
+
+async def auth_logout(request: web.Request) -> web.Response:
+    async with get_session() as s:
+        await accounts.revoke_token(s, _bearer(request))
+    return web.json_response({"ok": True})
+
+
+async def account_delete(request: web.Request) -> web.Response:
+    """In-app account deletion (required by the App Store and Google Play)."""
+    body = await _body(request)
+    async with svc.LOCK, get_session() as s:
+        user = await current_user(request, s, create=False)
+        if user is None:
+            return web.json_response({"ok": True})
+        _throttle(request, _ukey(user))
+        if user.telegram_id is None:
+            from database.secure import verify_password
+            if not verify_password(str(body.get("password", "")), user.hashed_password):
+                raise _bad("wrong password", status=401)
+        elif body.get("confirm") != "DELETE":
+            raise _bad('type DELETE to confirm')
+        await accounts.delete_account(s, user)
+    return web.json_response({"ok": True})
+
+
 async def order(request: web.Request) -> web.Response:
     return await _trade(request, "order")
 
@@ -325,7 +407,16 @@ def build_app(bot_token: str, quotes_fn: QuoteFn | None = None) -> web.Applicati
     app[THROTTLE] = {}
     r = app.router
     r.add_get("/", index)
-    r.add_get("/app.js", app_js)
+    for name, ctype in {"app.js": None, "admin.js": None, "sw.js": "application/javascript", "manifest.webmanifest":
+                        "application/manifest+json", "icon-192.png": None, "icon-512.png": None,
+                        "privacy.html": None, "terms.html": None}.items():
+        r.add_get("/" + name, _static(name, ctype))
+    r.add_get("/privacy", _static("privacy.html"))
+    r.add_get("/terms", _static("terms.html"))
+    r.add_post("/api/auth/register", auth_register)
+    r.add_post("/api/auth/login", auth_login)
+    r.add_post("/api/auth/logout", auth_logout)
+    r.add_post("/api/account/delete", account_delete)
     r.add_get("/api/challenges", challenges)
     r.add_get("/api/challenges/{cid}/leaderboard", leaderboard)
     r.add_get("/api/quotes", quotes)
@@ -336,6 +427,8 @@ def build_app(bot_token: str, quotes_fn: QuoteFn | None = None) -> web.Applicati
     r.add_post("/api/max_buy", max_buy)
     r.add_post("/api/order", order)
     r.add_post("/api/stop", stop)
+    from webapp import admin
+    admin.add_routes(r)
     return app
 
 

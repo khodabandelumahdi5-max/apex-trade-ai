@@ -144,6 +144,17 @@ plus fees. No customer exchange keys, and no deposits mid-contest to inflate ROI
   - It needs HTTPS. The VPS installer serves it at `https://app.<your-host>`. In @BotFather set the menu button to
     that URL.
   - `python -m webapp` runs the page alone in read-only mode (no trading), for testing.
+- **Outside Telegram**, the same app works in any browser and can be installed to the home screen as a PWA.
+  - E-mail and password sign-in: scrypt hashes, hashed bearer tokens, lock-out after 5 failed attempts.
+  - In-app account deletion. `/privacy` and `/terms` are templates to complete.
+  - `mobile/` wraps the app with Capacitor for Android and iOS builds. Read `mobile/README.md` before submitting
+    to a store: payments, contests and developer-account rules.
+- **Admin panel** (tab visible only to ADMIN_TELEGRAM_IDS / ADMIN_EMAILS from .env):
+  - Overview: users, subscriptions, revenue, pending payments.
+  - Challenges: create with all rules, edit the prize, end now.
+  - Users: search, add or remove subscription days, disable.
+  - Payments: mark an unmatched payment paid with its Tronscan tx hash (each tx can pay once).
+  - An audit log records every admin action.
 - `python -m competition create "AlphaDuel 21-day" SOL,JUP 21 "prize text"` creates a challenge (admin CLI).
 
 ## Things to know before trusting it

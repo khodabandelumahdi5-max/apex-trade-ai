@@ -1,0 +1,12 @@
+{
+  "appId": "com.example.alphaduel",
+  "appName": "AlphaDuel",
+  "webDir": "www",
+  "server": {
+    "url": "https://app.YOUR-DOMAIN",
+    "cleartext": false,
+    "allowNavigation": ["app.YOUR-DOMAIN"]
+  },
+  "android": { "allowMixedContent": false },
+  "ios": { "contentInset": "always" }
+}

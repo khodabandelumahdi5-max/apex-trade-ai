@@ -157,6 +157,8 @@ async def trade_command(s: AsyncSession, user: User, cmd: str, args: list[str], 
              "sell": "/sell ID SYMBOL [QTY]   e.g. /sell 1 SOL",
              "stop": "/stop ID SYMBOL NEW_STOP   e.g. /stop 1 SOL 150"}[cmd]
     need = {"buy": 4, "sell": 2, "stop": 3}[cmd]
+    if not user.is_active:
+        return "⛔ This account is disabled."
     if len(args) < need or len(args) > need + (1 if cmd == "sell" else 0):
         return f"Usage: <code>{e(usage)}</code>"
     try:

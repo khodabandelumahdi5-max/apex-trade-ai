@@ -1,0 +1,15 @@
+{
+  "name": "AlphaDuel – Trading Discipline Challenge",
+  "short_name": "AlphaDuel",
+  "description": "21-day paper-trading discipline challenge at live market prices.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#111315",
+  "theme_color": "#111315",
+  "icons": [
+    {"src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable"},
+    {"src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable"}
+  ]
+}

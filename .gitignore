@@ -7,3 +7,6 @@ __pycache__/
 .venv/
 backtest/data/
 recordings/
+mobile/node_modules/
+mobile/android/
+mobile/ios/

@@ -3,6 +3,11 @@
 "use strict";
 const tg = window.Telegram && window.Telegram.WebApp;
 if (tg) { tg.ready(); tg.expand(); }
+const inTelegram = !!(tg && tg.initData);
+const store = {                                    // localStorage can throw (private mode): never let it break the app
+  get(k) { try { return localStorage.getItem(k); } catch (_) { return null; } },
+  set(k, v) { try { v == null ? localStorage.removeItem(k) : localStorage.setItem(k, v); } catch (_) {} },
+};
 const S = { session: null, challenges: [], cid: null, me: null, quotes: {}, symbol: null, tab: "trade", invoice: null };
 const $ = (id) => document.getElementById(id);
 function el(tag, attrs, ...kids) {
@@ -30,11 +35,16 @@ function confirmBox(msg) {
 }
 
 async function api(path, body) {
-  const opt = { headers: { "X-Telegram-Init-Data": tg ? tg.initData : "" } };
+  const opt = { headers: {} };
+  if (inTelegram) opt.headers["X-Telegram-Init-Data"] = tg.initData;
+  else if (store.get("ad_token")) opt.headers["Authorization"] = "Bearer " + store.get("ad_token");
   if (body !== undefined) { opt.method = "POST"; opt.headers["Content-Type"] = "application/json"; opt.body = JSON.stringify(body); }
   const r = await fetch(path, opt);
   let data = null; try { data = await r.json(); } catch (_) {}
-  if (!r.ok) { const e = new Error((data && data.error) || `error ${r.status}`); e.rule = data && data.rule; e.status = r.status; throw e; }
+  if (!r.ok) {
+    if (r.status === 401 && !inTelegram && store.get("ad_token") && !path.startsWith("/api/auth/")) { store.set("ad_token", null); showAuth(); }
+    const e = new Error((data && data.error) || `error ${r.status}`); e.rule = data && data.rule; e.status = r.status; throw e;
+  }
   return data;
 }
 
@@ -63,9 +73,10 @@ async function loadSession() {
   try { S.session = await api("/api/session"); }
   catch (e) { S.session = null; }
   const chip = $("subchip");
-  if (!S.session) { chip.textContent = "open from the bot"; chip.className = "chip muted"; return; }
+  if (!S.session) { chip.textContent = inTelegram ? "offline" : "signed out"; chip.className = "chip muted"; $("nav-admin").classList.add("hidden"); return; }
   chip.textContent = S.session.subscribed ? "✓ subscribed" : "not subscribed";
   chip.className = "chip " + (S.session.subscribed ? "good" : "warn");
+  $("nav-admin").classList.toggle("hidden", !S.session.admin);
 }
 async function loadMe() {
   S.me = S.cid && S.session ? await api(`/api/me?challenge=${S.cid}`).catch(() => null) : null;
@@ -113,7 +124,7 @@ function renderTradeInto(root) {
     el("div", { class: "muted", text: `Prize: ${c.prize || "-"}` }));
   root.append(head);
 
-  if (!S.session) { root.append(el("div", { class: "banner warn", text: "Open AlphaDuel from the Telegram bot to trade." }), el("div", { class: "card" }, rulesList(c))); return; }
+  if (!S.session) { root.append(el("div", { class: "banner warn", text: "Sign in to trade." }), el("div", { class: "card" }, rulesList(c))); return; }
   const me = S.me;
   if (!me || !me.joined) {
     const card = el("div", { class: "card" }, el("h2", { text: "Rules" }), rulesList(c));
@@ -301,7 +312,32 @@ function renderAccount() {
       el("button", { class: "ghost wide", style: "margin-top:10px", text: "I've paid — check status", onclick: checkPaid }));
     tickCountdown();
   }
-  root.append(pay, el("div", { class: "card muted small", text: "AlphaDuel is a paper-trading competition with a virtual balance. It is not investment advice and challenge results do not predict real trading results." }));
+  const legal = el("div", { class: "card muted small" },
+    el("div", { text: "AlphaDuel is a paper-trading competition with a virtual balance. It is not investment advice and challenge results do not predict real trading results." }),
+    el("div", { style: "margin-top:8px" }, el("a", { href: "/terms", target: "_blank", text: "Terms" }), " · ", el("a", { href: "/privacy", target: "_blank", text: "Privacy" })));
+  const manage = el("div", { class: "card" }, el("h2", { text: "Account" }),
+    s.via === "email" ? el("div", { class: "muted small", style: "margin-bottom:10px", text: `Signed in as ${s.email}` }) : el("div", { class: "muted small", style: "margin-bottom:10px", text: "Signed in with Telegram" }),
+    s.via === "email" ? el("button", { class: "ghost wide", text: "Sign out", onclick: signOut }) : null,
+    el("details", {}, el("summary", { text: "Delete account" }),
+      el("div", { class: "muted small", text: "Deletes your login, profile and challenge history now. This can't be undone. Payment records are kept without personal data." }),
+      s.via === "email" ? el("input", { id: "delpw", type: "password", placeholder: "your password", autocomplete: "current-password", style: "margin-top:8px" })
+                        : el("input", { id: "delpw", placeholder: "type DELETE", style: "margin-top:8px" }),
+      el("button", { class: "danger wide", style: "margin-top:8px", text: "Delete my account", onclick: deleteAccount })));
+  root.append(pay, manage, legal);
+}
+async function signOut() {
+  try { await api("/api/auth/logout", {}); } catch (_) {}
+  store.set("ad_token", null); S.session = null; S.me = null; showAuth();
+}
+async function deleteAccount() {
+  const v = $("delpw").value;
+  if (!(await confirmBox("Delete your account permanently?"))) return;
+  try {
+    await api("/api/account/delete", S.session.via === "email" ? { password: v } : { confirm: v });
+    store.set("ad_token", null); S.session = null; S.me = null;
+    toast("Your account was deleted.", "good");
+    if (inTelegram) { await loadSession(); await refresh(); } else showAuth();
+  } catch (e) { toast(e.message, "bad"); }
 }
 async function getInvoice() {
   try { S.invoice = await api("/api/invoice", {}); } catch (e) { toast(e.message, "bad"); }
@@ -323,8 +359,9 @@ async function checkPaid() {
 function switchTab(tab) {
   S.tab = tab;
   document.querySelectorAll("nav button").forEach((b) => b.classList.toggle("on", b.dataset.tab === tab));
-  ["trade", "board", "account"].forEach((t) => $("tab-" + t).classList.toggle("hidden", t !== tab));
+  ["trade", "board", "account", "admin"].forEach((t) => $("tab-" + t).classList.toggle("hidden", t !== tab));
   if (tab === "board") renderBoard(); if (tab === "account") renderAccount(); if (tab === "trade") { renderTrade(); updateLive(); }
+  if (tab === "admin" && window.renderAdmin) window.renderAdmin();
 }
 async function refresh() {
   S.challenges = await api("/api/challenges").catch(() => []);
@@ -334,10 +371,49 @@ async function refresh() {
   }
   await loadMe(); switchTab(S.tab); loadQuotes();
 }
+// ------------------------------------------------------------------------------------------- sign in (outside Telegram)
+function showAuth(mode) {
+  mode = mode || "login";
+  ["trade", "board", "account", "admin"].forEach((t) => $("tab-" + t).classList.add("hidden"));
+  $("nav").classList.add("hidden"); $("subchip").textContent = "signed out";
+  const root = $("tab-auth"); root.classList.remove("hidden"); root.replaceChildren();
+  const email = el("input", { id: "au-email", type: "email", autocomplete: "email", placeholder: "you@example.com" });
+  const pw = el("input", { id: "au-pw", type: "password", autocomplete: mode === "login" ? "current-password" : "new-password", placeholder: mode === "login" ? "password" : "at least 10 characters" });
+  const terms = el("input", { id: "au-terms", type: "checkbox" });
+  const submit = async () => {
+    const body = { email: email.value, password: pw.value };
+    if (mode === "register") body.accept_terms = terms.checked;
+    try {
+      const r = await api(mode === "login" ? "/api/auth/login" : "/api/auth/register", body);
+      store.set("ad_token", r.token); root.classList.add("hidden"); $("nav").classList.remove("hidden");
+      S.tab = "trade"; await loadSession(); await refresh();
+    } catch (e) { toast(e.message, "bad"); }
+  };
+  pw.addEventListener("keydown", (e) => e.key === "Enter" && submit());
+  root.append(el("div", { class: "card auth" },
+    el("h2", { text: mode === "login" ? "Sign in" : "Create your account" }),
+    el("div", { class: "muted small", text: "21-day trading discipline challenge with a virtual balance. No exchange account or keys needed." }),
+    el("label", { text: "E-mail" }), email, el("label", { text: "Password" }), pw,
+    mode === "register" ? el("label", { class: "check" }, terms, el("span", {}, "I accept the ", el("a", { href: "/terms", target: "_blank", text: "terms" }), " and the ", el("a", { href: "/privacy", target: "_blank", text: "privacy policy" }), ".")) : null,
+    el("button", { class: "wide", style: "margin-top:14px", text: mode === "login" ? "Sign in" : "Create account", onclick: submit }),
+    el("button", { class: "linkbtn", text: mode === "login" ? "New here? Create an account" : "Have an account? Sign in", onclick: () => showAuth(mode === "login" ? "register" : "login") })));
+}
+
 document.querySelectorAll("nav button").forEach((b) => b.addEventListener("click", () => switchTab(b.dataset.tab)));
+if (!inTelegram && "serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});
 (async function init() {
-  await loadSession(); await refresh();
-  setInterval(() => { if (!document.hidden && S.tab === "trade") loadQuotes(); }, 5000);
-  setInterval(async () => { if (document.hidden) return; await loadMe(); if (S.tab === "trade" && !document.activeElement.matches("input")) { renderTrade(); updateLive(); } if (S.tab === "board") renderBoard(); }, 60000);
-  setInterval(tickCountdown, 30000);
+  if (!inTelegram && !store.get("ad_token")) { S.challenges = await api("/api/challenges").catch(() => []); showAuth(); return; }
+  await loadSession();
+  if (!S.session && !inTelegram) { showAuth(); return; }
+  await refresh();
 })();
+
+// timers run for the whole page life and do nothing while signed out
+setInterval(() => { if (S.session && !document.hidden && S.tab === "trade") loadQuotes(); }, 5000);
+setInterval(async () => {
+  if (!S.session || document.hidden) return;
+  await loadMe();
+  if (S.tab === "trade" && !document.activeElement.matches("input")) { renderTrade(); updateLive(); }
+  if (S.tab === "board") renderBoard();
+}, 60000);
+setInterval(tickCountdown, 30000);

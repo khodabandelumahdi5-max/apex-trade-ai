@@ -355,4 +355,28 @@ class ChallengeEquityPoint(Base):
     equity: Mapped[float] = mapped_column(Float, nullable=False)
 
 
+class AuthToken(Base):
+    """Login session for the app outside Telegram (web / installed app). Only the SHA-256 of the token is stored,
+    so a database leak does not leak usable sessions."""
+
+    __tablename__ = "auth_tokens"
+    id: Mapped[int] = mapped_column(PK, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(PK, ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class AdminAction(Base):
+    """Audit log of every admin change (who, what, when)."""
+
+    __tablename__ = "admin_actions"
+    id: Mapped[int] = mapped_column(PK, primary_key=True, autoincrement=True)
+    admin_user_id: Mapped[int] = mapped_column(PK, nullable=False)
+    action: Mapped[str] = mapped_column(String(64), nullable=False)
+    target: Mapped[str] = mapped_column(String(64), default="", nullable=False)
+    details: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True, nullable=False)
+
+
 HYPERTABLES: tuple[str, ...] = (MarketTick.__tablename__, WhaleTransaction.__tablename__)

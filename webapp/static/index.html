@@ -4,6 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>AlphaDuel</title>
+<link rel="manifest" href="/manifest.webmanifest">
+<meta name="theme-color" content="#111315">
+<link rel="apple-touch-icon" href="/icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <style>
   :root {
@@ -64,6 +68,21 @@
            font-size: 14px; display: none; z-index: 10; box-shadow: 0 6px 24px rgba(0,0,0,.35); }
   #toast.bad { background: #5a1f22; } #toast.good { background: #183f2b; }
   .hidden { display: none !important; }
+  .auth { max-width: 420px; margin: 24px auto; }
+  .linkbtn { background: none; color: var(--accent); padding: 6px 0; font-weight: 500; }
+  .check { display: flex; gap: 8px; align-items: flex-start; margin: 12px 0; font-size: 13px; color: var(--muted); }
+  .check input { width: auto; margin-top: 2px; }
+  a { color: var(--accent); }
+  .kpis { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
+  .kpi { background: var(--bg); border-radius: 12px; padding: 12px; }
+  .kpi b { display: block; font-size: 20px; font-variant-numeric: tabular-nums; }
+  .list-item { border-top: 1px solid var(--line); padding: 10px 0; }
+  .list-item:first-of-type { border-top: 0; }
+  .two { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  details summary { cursor: pointer; color: var(--accent); margin: 8px 0; }
+  .wrap { overflow-wrap: anywhere; word-break: break-word; }
+  .seg.scroll { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+  .seg.scroll button { flex: none; padding: 8px 12px; font-size: 13px; }
 </style>
 </head>
 <body>
@@ -73,16 +92,20 @@
   </div>
   <div class="muted small">21-day trading discipline challenge · paper trading at live MEXC prices · not financial advice</div>
 
+  <section id="tab-auth" class="hidden"></section>
   <section id="tab-trade"></section>
   <section id="tab-board" class="hidden"></section>
   <section id="tab-account" class="hidden"></section>
+  <section id="tab-admin" class="hidden"></section>
 
   <div id="toast"></div>
-  <nav>
+  <nav id="nav">
     <button data-tab="trade" class="on">📈 Trade</button>
-    <button data-tab="board">🏆 Leaderboard</button>
+    <button data-tab="board">🏆 Ranks</button>
     <button data-tab="account">👤 Account</button>
+    <button data-tab="admin" class="hidden" id="nav-admin">🛠 Admin</button>
   </nav>
   <script src="/app.js"></script>
+  <script src="/admin.js"></script>
 </body>
 </html>
