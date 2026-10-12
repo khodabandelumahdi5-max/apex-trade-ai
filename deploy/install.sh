@@ -46,6 +46,12 @@ PY
 get_env() { if [[ -f $ENV ]]; then grep -m1 "^$1=" "$ENV" | cut -d= -f2- || true; fi; }
 
 echo "================ AlphaDuel installer ================"
+# minimal images ship without curl; it is needed already for checking the bot token below
+if ! command -v curl >/dev/null || ! command -v python3 >/dev/null; then
+  echo "Installing curl / python3 first..."
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get update -qq && apt-get install -y -qq curl python3 >/dev/null
+fi
 read -rp  "Dashboard username [admin]: " DASH_USER; DASH_USER=${DASH_USER:-admin}
 while :; do
   read -rsp "Dashboard password (min 10 chars): " DASH_PASS; echo
