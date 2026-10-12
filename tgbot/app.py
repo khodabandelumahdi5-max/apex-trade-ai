@@ -44,8 +44,14 @@ class Bot:
         self.mexc = mexc
         self.token = token
         self._web_runner = None
-        self.app = (Application.builder().token(token).concurrent_updates(True)
-                    .post_init(self._start_web).post_shutdown(self._stop_web).build())
+        from tgbot.netproxy import telegram_proxy
+        builder = (Application.builder().token(token).concurrent_updates(True)
+                   .post_init(self._start_web).post_shutdown(self._stop_web))
+        proxy = telegram_proxy()
+        if proxy:                                   # VPN apps on Windows set a system proxy httpx doesn't see
+            logger.info("Telegram via proxy {}", proxy)
+            builder = builder.proxy(proxy).get_updates_proxy(proxy)
+        self.app = builder.build()
         self._last_cmd: dict[int, float] = {}
         self._quote_cache: dict[str, tuple[float, Quote]] = {}
         a = self.app

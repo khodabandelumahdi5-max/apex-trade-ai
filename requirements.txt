@@ -13,4 +13,4 @@ scipy==1.13.0
 loguru==0.7.2
 solders==0.21.0
 cryptography==43.0.3
-python-telegram-bot[job-queue]==21.6
+python-telegram-bot[job-queue,socks]==21.6
