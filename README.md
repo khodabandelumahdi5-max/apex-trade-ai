@@ -58,18 +58,26 @@ confidence can differ slightly from the bot's. Use a 1h chart, e.g. `MEXC:SOLUSD
 
 ## Run on a VPS (24/7, independent of your own internet)
 
-On a fresh **Ubuntu 24.04** server (2 vCPU / 2 GB RAM is enough; pick a European location):
-
+On a fresh Ubuntu 22.04 or 24.04 server, as root:
 ```bash
-curl -fsSL -o install.sh https://raw.githubusercontent.com/khodabandelumahdi5-max/apex-trade-ai/main/deploy/install.sh \
-  -H "Authorization: token <GITHUB_TOKEN>"
-sudo bash install.sh
+curl -fsSL -o install.sh https://raw.githubusercontent.com/khodabandelumahdi5-max/apex-trade-ai/main/deploy/install.sh
+bash install.sh
 ```
-
-It installs the bot as two systemd services that restart on failure and after reboots, puts the dashboard behind
-Caddy with HTTPS (free certificate on `<ip>.sslip.io`) and a password, and enables a firewall (22/80/443 only).
-`sudo bash /opt/apex-trade-ai/deploy/update.sh` updates later. Whoever administers the VPS can read `.env`:
-use an API key without withdrawal rights, IP-restricted to the VPS.
+- **Prompts.** It asks for the dashboard user/password, the Telegram bot token, your Telegram id (for the admin
+  panel), the Stars price and a support contact. These are typed on the server only, into `/opt/alphaduel/.env`
+  (chmod 600). It generates `DB_ENCRYPTION_KEY`.
+- **What it installs:** system updates, Python venv, firewall (SSH/80/443 only), and HTTPS through Caddy on
+  `<ip>.sslip.io` and `app.<ip>.sslip.io`.
+- **Services** (systemd: start on boot, restart on crash):
+  - `alphaduel-engine`: the trading engine, paper mode by default;
+  - `alphaduel-dashboard`: the Streamlit dashboard;
+  - `alphaduel-bot`: the Telegram bot and the Mini App.
+- **Health check.** At the end it checks every service, its restarts, its logs and the local ports, and prints
+  OK/FAIL.
+- **Day to day:**
+  - Logs: `journalctl -u alphaduel-bot -f`.
+  - Update: `bash /opt/alphaduel/deploy/update.sh`.
+  - Back up `.env` and `apex.db`.
 
 ## Run
 
