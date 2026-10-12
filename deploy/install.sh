@@ -51,12 +51,43 @@ while :; do
   read -rsp "Dashboard password (min 10 chars): " DASH_PASS; echo
   [[ ${#DASH_PASS} -ge 10 ]] && break || echo "Too short."
 done
+tg_api() { curl -fsS -m 30 "https://api.telegram.org/bot$1/$2" 2>/dev/null || true; }
+TG_TOKEN=""; ADMIN_ID=""; BOTNAME=""
 if [[ -z "$(get_env TELEGRAM_BOT_TOKEN)" ]]; then
-  read -rsp "Telegram bot token from @BotFather (Enter to skip): " TG_TOKEN; echo
+  # shown while typing: in a browser console the token usually has to be typed by hand
+  while :; do
+    read -rp "Telegram bot token from @BotFather (Enter to skip): " TG_TOKEN
+    TG_TOKEN=$(echo "$TG_TOKEN" | tr -d '[:space:]')
+    [[ -z "$TG_TOKEN" ]] && break
+    ME=$(tg_api "$TG_TOKEN" getMe)
+    if [[ "$ME" == *'"ok":true'* ]]; then
+      BOTNAME=$(echo "$ME" | python3 -c 'import json,sys; print(json.load(sys.stdin)["result"]["username"])')
+      echo "  OK: token belongs to @$BOTNAME"
+      break
+    fi
+    echo "  This token was rejected by Telegram (typo?). Check it in @BotFather and type it again."
+  done
+  if [[ -n "$TG_TOKEN" ]]; then
+    echo "  Now open @$BOTNAME in Telegram and send it any message (e.g. hi). Waiting up to 2 minutes..."
+    for _ in $(seq 1 12); do
+      ADMIN_ID=$(tg_api "$TG_TOKEN" "getUpdates?timeout=10" | python3 -c '
+import json, sys
+try:
+    upd = json.load(sys.stdin).get("result", [])
+except Exception:
+    upd = []
+ids = [u["message"]["from"]["id"] for u in upd if u.get("message", {}).get("chat", {}).get("type") == "private"]
+print(ids[-1] if ids else "")')
+      [[ -n "$ADMIN_ID" ]] && { echo "  OK: your Telegram id is $ADMIN_ID"; break; }
+    done
+  fi
 else
-  TG_TOKEN=""; echo "Telegram bot token: already set in $ENV (kept)"
+  echo "Telegram bot token: already set in $ENV (kept)"
 fi
-read -rp  "Your Telegram numeric id for the admin panel (from @userinfobot, Enter to skip): " ADMIN_ID
+if [[ -z "$ADMIN_ID" ]]; then
+  read -rp  "Your Telegram numeric id for the admin panel (from @userinfobot, Enter to skip): " ADMIN_ID
+fi
+read -rp  "Your trading budget in USDT for signal sizes [100]: " BUDGET
 read -rp  "Subscription price in Telegram Stars (Enter to skip): " STARS
 read -rp  "Support contact shown by /paysupport, e.g. @yourname (Enter to skip): " SUPPORT
 
@@ -105,6 +136,8 @@ if [[ -z "$(get_env DB_ENCRYPTION_KEY)" ]]; then
 fi
 if [[ -n "$TG_TOKEN" ]]; then set_env TELEGRAM_BOT_TOKEN "$TG_TOKEN"; fi
 if [[ -n "$ADMIN_ID" ]]; then set_env ADMIN_TELEGRAM_IDS "$ADMIN_ID"; fi
+if [[ -n "$BOTNAME" ]]; then set_env BOT_USERNAME "$BOTNAME"; fi
+set_env SIGNAL_BUDGET_USD "${BUDGET:-100}"
 if [[ -n "$STARS" ]]; then set_env STARS_PRICE "$STARS"; fi
 if [[ -n "$SUPPORT" ]]; then set_env SUPPORT_CONTACT "$SUPPORT"; fi
 set_env MINIAPP_URL "https://app.$HOST"
