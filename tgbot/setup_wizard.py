@@ -25,7 +25,8 @@ class WizardError(Exception):
 
 def _client() -> httpx.Client:
     from tgbot.netproxy import telegram_proxy
-    return httpx.Client(timeout=20, proxy=telegram_proxy())
+    # read timeout must stay above the getUpdates long-poll time (10 s) plus a slow VPN
+    return httpx.Client(timeout=httpx.Timeout(45, connect=20), proxy=telegram_proxy())
 
 
 def api(token: str, method: str, **params) -> dict:
@@ -60,8 +61,17 @@ def check_token(token: str) -> str:
 def wait_for_start(token: str, timeout_s: int = 180) -> tuple[int, str]:
     """Return (telegram id, first name) of whoever sends a message to the bot within the timeout."""
     offset, deadline = None, time.monotonic() + timeout_s
+    failures = 0
     while time.monotonic() < deadline:
-        updates = api(token, "getUpdates", timeout=20, **({"offset": offset} if offset else {}))
+        try:
+            updates = api(token, "getUpdates", timeout=10, **({"offset": offset} if offset else {}))
+            failures = 0
+        except WizardError as exc:
+            # a slow VPN can drop one long-poll; only give up when it keeps failing
+            if "VPN" not in str(exc) or (failures := failures + 1) >= 3:
+                raise
+            time.sleep(2)
+            continue
         for u in updates:
             offset = u["update_id"] + 1
             msg = u.get("message") or {}

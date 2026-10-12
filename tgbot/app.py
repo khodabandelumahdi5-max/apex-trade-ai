@@ -46,7 +46,10 @@ class Bot:
         self._web_runner = None
         from tgbot.netproxy import telegram_proxy
         builder = (Application.builder().token(token).concurrent_updates(True)
-                   .post_init(self._start_web).post_shutdown(self._stop_web))
+                   .post_init(self._start_web).post_shutdown(self._stop_web)
+                   # generous timeouts: Telegram is often reached through a slow VPN
+                   .connect_timeout(20).read_timeout(30).write_timeout(30).pool_timeout(10)
+                   .get_updates_connect_timeout(20).get_updates_read_timeout(30))
         proxy = telegram_proxy()
         if proxy:                                   # VPN apps on Windows set a system proxy httpx doesn't see
             logger.info("Telegram via proxy {}", proxy)

@@ -66,3 +66,18 @@ def test_write_env_and_finish(tmp_path, monkeypatch):
     assert written == {"TELEGRAM_BOT_TOKEN": TOKEN, "BOT_USERNAME": "alphaduellivebot", "ADMIN_TELEGRAM_IDS": "42",
                        "SIGNAL_BUDGET_USD": "250"}
     assert sent[-1][0] == "sendMessage" and sent[-1][1]["chat_id"] == 42 and "$250" in sent[-1][1]["text"]
+
+
+def test_wait_for_start_survives_a_dropped_long_poll(monkeypatch):
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise httpx.ReadTimeout("slow vpn")
+        upd = [{"update_id": 1, "message": {"from": {"id": 7, "first_name": "A"}, "chat": {"type": "private"}}}]
+        return httpx.Response(200, json={"ok": True, "result": upd if calls["n"] == 2 else []})
+
+    monkeypatch.setattr(wz, "_client", lambda: httpx.Client(transport=httpx.MockTransport(handler)))
+    monkeypatch.setattr(wz.time, "sleep", lambda s: None)
+    assert wz.wait_for_start(TOKEN, timeout_s=30) == (7, "A")
