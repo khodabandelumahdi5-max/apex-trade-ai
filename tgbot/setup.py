@@ -59,4 +59,10 @@ async def configure(bot: Bot) -> str:
     except TelegramError as exc:                    # cosmetic settings must never stop the bot
         logger.warning("bot profile setup incomplete: {}", exc)
     logger.info("Running as @{} (id {})", me.username, me.id)
+    owners = [int(x) for x in os.getenv("ADMIN_TELEGRAM_IDS", "").replace(" ", "").split(",") if x.isdigit()]
+    for chat in owners:                           # after a reboot / reconnect the owner knows it is watching again
+        try:
+            await bot.send_message(chat, "✅ ربات روشن شد و بازار را رصد می‌کند. وضعیت: /plan · سیگنال‌های باز: /signals")
+        except TelegramError as exc:
+            logger.warning("start-up message to {} failed: {}", chat, exc)
     return me.username
