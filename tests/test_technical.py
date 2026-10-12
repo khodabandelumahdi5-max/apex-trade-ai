@@ -46,3 +46,12 @@ def test_obi_and_book_validation():
         MarketDataState(symbol="X", price=100, bid=101, ask=100)
     with pytest.raises(ValueError):
         MarketDataState(symbol="X", price=100, bids=list(reversed(bids)))
+
+
+def test_closed_bars_drops_the_forming_candle():
+    from agents.technical_agent import closed_bars
+    ts = pd.date_range("2026-01-01 00:00", periods=3, freq="1h", tz="UTC")
+    df = pd.DataFrame({"timestamp": ts, "close": [1.0, 2.0, 3.0]})
+    now = pd.Timestamp("2026-01-01 02:30", tz="UTC")            # the 02:00 bar is still forming
+    assert closed_bars(df, "1h", now)["close"].tolist() == [1.0, 2.0]
+    assert closed_bars(df, "1h", pd.Timestamp("2026-01-01 03:00", tz="UTC"))["close"].tolist() == [1.0, 2.0, 3.0]

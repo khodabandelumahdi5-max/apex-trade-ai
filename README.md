@@ -174,6 +174,27 @@ plus fees. No customer exchange keys, and no deposits mid-contest to inflate ROI
   - An audit log records every admin action.
 - `python -m competition create "AlphaDuel 21-day" SOL,JUP 21 "prize text"` creates a challenge (admin CLI).
 
+## Manual-trading signals in Telegram (signalbot/, tgbot/signals.py)
+
+The signals run inside the bot (`bot.bat` on Windows, or `python -m tgbot`) and go only to the Telegram ids in
+`ADMIN_TELEGRAM_IDS`.
+
+- **Scan.** Every 5 minutes it checks `SIGNAL_SYMBOLS` (MEXC USDT pairs) on **closed** 15m/1h/4h candles, the same
+  bars TradingView shows for `MEXC:<PAIR>USDT`.
+  - A BUY signal includes: entry (and a "don't chase" limit), stop, TP1 / TP2, the size for `SIGNAL_BUDGET_USD`, the
+    loss at the stop including fees (`SIGNAL_RISK_PCT`), and a TradingView chart link.
+  - Buttons: "I entered" / "Skip". If you bought at a different price, use `/entered ID PRICE`.
+- **Watch.** Every 20 seconds, for a signal you entered:
+  - warnings when the price has covered 50 % and 80 % of the way to the stop (they re-arm after a recovery);
+  - "move your stop" at breakeven (+1.5 % or TP1) and for the 2 % trailing stop;
+  - TP1 (sell half), TP2, stop hit, and an exit when the 1h trend breaks;
+  - a message when prices are unavailable for 3 minutes, and another when they are back.
+  - Signals you did not enter expire after 3 h, or as soon as the price reaches the stop.
+- **Commands:** `/signals`, `/plan` (every pair now), `/scan`, `/entered ID PRICE`, `/exit ID [PRICE]`.
+- **Limitations.** The alerts only work while the laptop and its internet are on, so always put the stop on the
+  exchange right after buying. The strategy is selective and its 1-year backtest was slightly negative. Treat the
+  signals as a disciplined process, not as promised profit.
+
 ## Things to know before trusting it
 
 - Selling access to a strategy, or trading other people's accounts, is regulated as investment advice or

@@ -57,7 +57,9 @@ class Bot:
             a.add_handler(CommandHandler(name, self.trade))
         a.add_handler(CommandHandler("paysupport", self.paysupport))
         a.add_handler(CommandHandler("terms", self.terms))
-        a.add_handler(CallbackQueryHandler(self.button))
+        a.add_handler(CallbackQueryHandler(self.button, pattern=r"^(?!sig:)"))
+        from tgbot.signals import SignalDesk
+        self.signals = SignalDesk(a, mexc)
         a.add_handler(PreCheckoutQueryHandler(self.precheckout))
         a.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, self.paid))
         a.job_queue.run_repeating(self.payments_job, interval=60, first=10)

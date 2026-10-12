@@ -9,7 +9,7 @@ from __future__ import annotations
 import os
 
 from loguru import logger
-from telegram import Bot, BotCommand, MenuButtonCommands, MenuButtonWebApp, WebAppInfo
+from telegram import Bot, BotCommand, BotCommandScopeChat, MenuButtonCommands, MenuButtonWebApp, WebAppInfo
 from telegram.error import TelegramError
 
 COMMANDS = [
@@ -19,6 +19,10 @@ COMMANDS = [
     ("stop", "Raise a stop: /stop ID SYMBOL PRICE"), ("me", "My stats: /me ID"),
     ("board", "Leaderboard: /board ID"), ("help", "How it works"), ("terms", "Terms and privacy"),
     ("paysupport", "Payment support"),
+]
+OWNER_COMMANDS = [
+    ("signals", "Active trading signals"), ("plan", "Market state now"), ("scan", "Check for signals now"),
+    ("entered", "I bought: /entered ID PRICE"), ("exit", "I sold: /exit ID [PRICE]"),
 ]
 DESCRIPTION = (
     "⚡ AlphaDuel — the 21-day trading discipline challenge.\n\n"
@@ -39,6 +43,10 @@ async def configure(bot: Bot) -> str:
         raise WrongBotError(f"TELEGRAM_BOT_TOKEN belongs to @{me.username}, but BOT_USERNAME is @{expected}")
     try:
         await bot.set_my_commands([BotCommand(c, d) for c, d in COMMANDS])
+        owners = [int(x) for x in os.getenv("ADMIN_TELEGRAM_IDS", "").replace(" ", "").split(",") if x.isdigit()]
+        for chat in owners:                       # owner-only commands show up only in the owner's chat
+            await bot.set_my_commands([BotCommand(c, d) for c, d in OWNER_COMMANDS + COMMANDS],
+                                      scope=BotCommandScopeChat(chat))
         if (await bot.get_my_description()).description != DESCRIPTION:     # avoid rate-limited rewrites
             await bot.set_my_description(DESCRIPTION)
         if (await bot.get_my_short_description()).short_description != SHORT_DESCRIPTION:

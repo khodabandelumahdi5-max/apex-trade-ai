@@ -14,6 +14,19 @@ from core.state import MarketDataState, TechnicalState, TimeframeAnalysis
 from exchange_connector import ConnectorError, ExchangeConnector, MexcSpotConnector, SolanaDEXConnector
 
 TIMEFRAMES = ("15m", "1h", "4h")
+TF_SECONDS = {"15m": 900, "1h": 3600, "4h": 14_400}
+
+
+def closed_bars(df: pd.DataFrame, tf: str, now: pd.Timestamp | None = None) -> pd.DataFrame:
+    """Drop the candle that is still forming. Exchanges return the current, unfinished bar last; using it makes a
+    signal appear mid-hour and vanish at the close (repainting). TradingView alerts on bar close and the
+    backtest uses closed bars only, so the live agent does the same."""
+    if df.empty or "timestamp" not in df:
+        return df
+    ts = pd.to_datetime(df["timestamp"], utc=True) if not pd.api.types.is_datetime64_any_dtype(df["timestamp"]) \
+        else df["timestamp"]
+    now = now if now is not None else pd.Timestamp.now(tz="UTC")
+    return df[ts + pd.Timedelta(seconds=TF_SECONDS.get(tf, 0)) <= now].reset_index(drop=True)
 WEIGHTS = {"trend_4h": 0.30, "trend_1h": 0.30, "trend_15m": 0.10, "rsi": 0.15, "obi": 0.15}
 OBI_PROBE_USD = 5_000.0
 OBI_NOISE_FLOOR = 5e-4  # Jupiter priceImpactPct units (fraction)
@@ -84,6 +97,9 @@ class TechnicalAgent(BaseAgent[TechnicalState]):
         self.settings, self.candles, self.dex, self.cex, self.mexc = settings, candles, dex, cex, mexc
 
     async def _frame(self, token: WatchToken, tf: str) -> pd.DataFrame:
+        return closed_bars(await self._raw_frame(token, tf), tf)
+
+    async def _raw_frame(self, token: WatchToken, tf: str) -> pd.DataFrame:
         if self.mexc is not None and await self.mexc.has_symbol(token.symbol):
             rows = await self.mexc.fetch_ohlcv(token.symbol, tf, 500)
             df = pd.DataFrame(rows, columns=["timestamp", "open", "high", "low", "close", "volume"])
@@ -95,7 +111,9 @@ class TechnicalAgent(BaseAgent[TechnicalState]):
             if self.cex and token.cex_symbol:
                 self.log.warning("GeckoTerminal {} {} failed ({}); using {}", token.symbol, tf, exc, self.cex.name)
                 rows = await self.cex.fetch_ohlcv(token.cex_symbol, tf, 500)
-                return pd.DataFrame(rows, columns=["timestamp", "open", "high", "low", "close", "volume"])
+                df = pd.DataFrame(rows, columns=["timestamp", "open", "high", "low", "close", "volume"])
+                df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
+                return df
             raise
 
     async def _dex_imbalance(self, token: WatchToken, price: float) -> float:

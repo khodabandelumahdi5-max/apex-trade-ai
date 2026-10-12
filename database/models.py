@@ -394,4 +394,42 @@ class StarPayment(Base):
     refunded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class SignalStatus(str, enum.Enum):
+    IDEA = "IDEA"            # sent, the trader has not entered yet
+    ENTERED = "ENTERED"      # the trader bought manually; the watcher manages stops / targets
+    CLOSED = "CLOSED"        # exit reached (stop, targets, trend) or closed by the trader
+    EXPIRED = "EXPIRED"      # idea not taken in time, or invalidated before entry
+    SKIPPED = "SKIPPED"
+
+
+class TradeSignal(Base):
+    """A manual-trading signal sent to the owner on Telegram and followed until the exit."""
+
+    __tablename__ = "trade_signals"
+    id: Mapped[int] = mapped_column(PK, primary_key=True, autoincrement=True)
+    symbol: Mapped[str] = mapped_column(String(32), index=True, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), default=SignalStatus.IDEA.value, index=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    confidence: Mapped[float] = mapped_column(Float, nullable=False)
+    entry: Mapped[float] = mapped_column(Float, nullable=False)              # suggested entry (ask when sent)
+    initial_stop: Mapped[float] = mapped_column(Float, nullable=False)
+    stop: Mapped[float] = mapped_column(Float, nullable=False)               # current recommended stop
+    tp1: Mapped[float | None] = mapped_column(Float, nullable=True)
+    tp2: Mapped[float | None] = mapped_column(Float, nullable=True)
+    qty: Mapped[float] = mapped_column(Float, nullable=False)                # suggested size for the budget
+    reasons: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    user_entry: Mapped[float | None] = mapped_column(Float, nullable=True)
+    entered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    highest: Mapped[float | None] = mapped_column(Float, nullable=True)
+    protection: Mapped[str] = mapped_column(String(24), default="INITIAL_STOP", nullable=False)
+    tp1_hit: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    danger_level: Mapped[int] = mapped_column(Integer, default=0, nullable=False)   # 0, 50, 80 (% of way to stop)
+    notified_stop: Mapped[float | None] = mapped_column(Float, nullable=True)
+    flags: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    close_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    exit_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    message_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+
+
 HYPERTABLES: tuple[str, ...] = (MarketTick.__tablename__, WhaleTransaction.__tablename__)
