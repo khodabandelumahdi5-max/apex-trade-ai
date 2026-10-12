@@ -109,6 +109,70 @@ def finish(token: str, user_id: int, name: str, budget: float) -> None:
 
 
 # ---------------------------------------------------------------------------------------------- user interface
+def _clipboard_token(root) -> str:
+    try:
+        text = (root.clipboard_get() or "").strip()
+    except Exception:
+        return ""
+    return text if ":" in text and 30 <= len(text) <= 80 and " " not in text else ""
+
+
+def ask_token(root, title: str) -> str | None:
+    """Token dialog that works with any keyboard layout: Ctrl+V is bound by key position (works on a Persian
+    layout too), there is a Paste button, a right-click Paste, and a token already on the clipboard is filled in."""
+    import tkinter as tk
+
+    win = tk.Toplevel(root)
+    win.title(title)
+    win.attributes("-topmost", True)
+    win.resizable(False, False)
+    tk.Label(win, justify="right", font=("Tahoma", 10),
+             text="۱) توکن ربات را این‌جا بگذار\nدر تلگرام روی توکن در پیام BotFather کلیک کن تا کپی شود، "
+                  "بعد دکمه‌ی «Paste» را بزن").pack(padx=14, pady=(12, 2), anchor="e")
+    tk.Label(win, text="1) Click the token in BotFather's message to copy it, then press Paste.",
+             font=("Segoe UI", 9)).pack(padx=14, anchor="w")
+    var = tk.StringVar(value=_clipboard_token(root))
+    entry = tk.Entry(win, textvariable=var, width=58, font=("Consolas", 11))
+    entry.pack(padx=14, pady=8)
+    result: dict[str, str | None] = {"v": None}
+
+    def paste(_=None):
+        try:
+            var.set(root.clipboard_get().strip())
+        except Exception:
+            pass
+        return "break"
+
+    def ok(_=None):
+        result["v"] = var.get().strip()
+        win.destroy()
+
+    def cancel(_=None):
+        win.destroy()
+
+    def on_key(event):                      # Ctrl+V by physical key (keycode 86 = V) on any layout
+        if event.state & 0x4 and event.keycode == 86:
+            return paste()
+        return None
+
+    entry.bind("<Key>", on_key)
+    entry.bind("<Shift-Insert>", paste)
+    entry.bind("<Return>", ok)
+    menu = tk.Menu(win, tearoff=0)
+    menu.add_command(label="Paste", command=paste)
+    entry.bind("<Button-3>", lambda ev: menu.tk_popup(ev.x_root, ev.y_root))
+    row = tk.Frame(win)
+    row.pack(pady=(0, 12))
+    tk.Button(row, text="📋 Paste", width=12, command=paste).pack(side="left", padx=4)
+    tk.Button(row, text="OK", width=12, command=ok).pack(side="left", padx=4)
+    tk.Button(row, text="Cancel", width=12, command=cancel).pack(side="left", padx=4)
+    win.protocol("WM_DELETE_WINDOW", cancel)
+    entry.focus_force()
+    win.grab_set()
+    root.wait_window(win)
+    return result["v"]
+
+
 def run_gui() -> bool:
     import tkinter as tk
     from tkinter import messagebox, simpledialog
@@ -118,9 +182,7 @@ def run_gui() -> bool:
     root.attributes("-topmost", True)
     title = "AlphaDuel"
     while True:
-        token = simpledialog.askstring(title, "۱) توکن ربات را این‌جا Paste کن (Ctrl+V)\n"
-                                              "از ‎@BotFather ← /mybots ← alphaduellivebot ← API Token\n\n"
-                                              "Paste the bot token:", parent=root)
+        token = ask_token(root, title)
         if token is None:
             return False
         try:
